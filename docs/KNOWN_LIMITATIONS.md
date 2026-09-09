@@ -10,7 +10,22 @@ Both of these are real, deliberately investigated conclusions, not gaps left fro
 
 **What does work:** the identical controller, connected through a wireless dongle (the official Xbox Wireless Adapter, or the controller's own dongle if it has one) enumerates as a genuine `HIDClass` device instead, and HidHide can hide it exactly like any other controller — confirmed working. Plain, ordinary gamepad use (no HOTAS mode, no disguise toggle, no remapping) is completely unaffected by any of this either way, wired or not, since both the real and virtual device carry identical data regardless of whether hiding succeeds.
 
-**If you're extending this code:** don't spend time trying to make HidHide hide an `XnaComposite` device — it's not a matter of finding the right device path or registration call, the driver class itself is the obstacle. The only known way around it is a different connection type (dongle instead of cable), which is a hardware-level workaround, not a software one.
+**If you're extending this code:** don't spend time trying to make HidHide hide an `XnaComposite` device — it's not a matter of finding the right device path or registration call, the driver class itself is the obstacle. A different connection type (dongle instead of cable) is the confirmed way around it.
+
+### A second possible mitigation, for some third-party controllers specifically: switch it out of X-input mode
+
+Researched as a follow-up ([tracking issue](https://github.com/spongebobmoviept-lab/RuthlessControllerRelay/issues/2#issuecomment-5599594269)) after realizing many third-party Xbox-compatible controllers (GameSir, 8BitDo, and similar) support a mode switch between "X-input mode" and a generic "D-input mode" — and the two modes aren't just interpreted differently by software, they're genuinely different USB identities at the firmware level.
+
+**Confirmed with real evidence:** a real user's USB descriptor dump for a GameSir T4 Cyclone ([Linux `xpad` driver issue #273](https://github.com/paroj/xpad/issues/273)) shows the controller reports itself as `3537:1006 GameSir GameSir-Cyclone` (its own vendor identity) in D-input mode, versus `3537:1014 Microsoft Xbox 360 for Windows Controller` (a literal Xbox 360 descriptor spoof) in X-input mode. Only the second one binds to the `XnaComposite`/XUSB stack — the first should enumerate as plain `HIDClass`, hideable by HidHide like any other generic gamepad.
+
+**This is a real, promising mechanism — but it is controller-model-specific, not a general "GameSir" or "any Xbox-compatible controller" fix:**
+- Confirmed button-combo mode switches (no vendor software needed) exist for 8BitDo's Ultimate C (hold X+Home or B+Home while powering on) and Pro 2 (hold X or B while connecting the cable) — 8BitDo's own support pages, not third-hand claims.
+- The GameSir T4 Cyclone is confirmed to support both modes (per the USB descriptor evidence above), but the exact button combo to switch it wasn't confirmed from an official source.
+- **GameSir's own official manual for the G7 Pro / G7 SE — the exact model this project has actually been tested with — describes only wired / 2.4G / Bluetooth connection modes and a rear physical switch, with no X-input/D-input toggle mentioned at all.** This doesn't prove the G7 Pro lacks the capability, but it means this mitigation is *not* confirmed for the hardware this project's own testing has used. Don't assume it works for your specific controller without checking.
+- **Real trade-off, not a strict upgrade:** community reports consistently indicate rumble does not work in D-input mode on 8BitDo controllers. Whether analog triggers still report correctly (vs. becoming digital buttons) in D-input mode is unconfirmed. This would very likely trade rumble for hideability, not get you both.
+- No clean Windows API exists to detect which mode a connected controller is currently in — the only reliable method found is checking the enumerated VID/PID against a per-controller-model table of "native" vs. "Xbox-spoofed" IDs, built up from real confirmed data the same way every other device-matching table in this project was.
+
+**If your controller supports this and you want to try it:** check whether your controller has a documented X-input/D-input switch (often a physical slide switch, or a button held while powering on/connecting), switch it, and confirm two things independently before relying on it: that HidHide can actually hide it in that mode, and that this project's generic DirectInput path reads its buttons/axes correctly (some third-party pads need trigger-axis correction the same way the DS4 originally did — see [docs/DEVELOPMENT_JOURNEY.md](DEVELOPMENT_JOURNEY.md)).
 
 ## Bluetooth PlayStation-controller rumble and LED output
 

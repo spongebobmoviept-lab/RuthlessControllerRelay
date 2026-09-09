@@ -19,7 +19,7 @@ Full rumble, lightbar/LED color, and battery reporting, wherever the hardware an
 
 ## The problem this solves
 
-A flight-sim/HOTAS-style game binds its controls to a real **joystick** device. A gamepad isn't one — Windows treats them as different device classes entirely. There was no clean, single tool that could take a real PlayStation or Xbox controller and present it as a virtual joystick to one game, while still behaving like a normal controller everywhere else, switchable live with no reboot and no unplug/replug.
+Flight sims, space sims, and other HOTAS-style games bind their controls to a real **joystick** device — a flight stick, a throttle, a yoke. A gamepad isn't one of those, and Windows treats "gamepad" and "joystick" as genuinely different device classes, not just a labeling difference. If you don't own a real HOTAS setup and want to fly with a PS4/PS5 or Xbox controller instead, there was no clean, single tool that could present it as a virtual joystick to that one flight sim, while still behaving like a normal controller everywhere else — switchable live, with no reboot and no unplug/replug.
 
 ## How it works
 

@@ -47,7 +47,7 @@ Researched as a follow-up ([tracking issue](https://github.com/spongebobmoviept-
 
 **Symptom:** a DualShock 4 or DualSense connected over Bluetooth reports input perfectly, but cannot be made to rumble or change lightbar color from this tool. USB/wired connections for the identical controllers have both working correctly.
 
-This was investigated more thoroughly than almost anything else in this project — real hardware testing across two entirely different Bluetooth radio chipsets, plus a source-level review of how other real, mature tools handle (or fail to handle) the exact same problem — and the conclusion was arrived at deliberately, not from giving up early.
+This was investigated more thoroughly than almost anything else in this project — real hardware testing across two entirely different Bluetooth radio chipsets, plus a source-level review of how other real, mature tools handle (or fail to handle) the exact same problem — and the conclusion was arrived at deliberately, not from giving up early. The actual failed attempt's real source code is preserved in [`experiments/bluetooth-ps-output-attempt-2026-09-09.c`](../experiments/bluetooth-ps-output-attempt-2026-09-09.c), clearly marked do-not-use, if you want to see exactly what was tried rather than just read about it.
 
 ### What was tried
 

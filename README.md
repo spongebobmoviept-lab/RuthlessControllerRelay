@@ -11,7 +11,7 @@ Full rumble, lightbar/LED color, and battery reporting, wherever the hardware an
 [![Built with Zig](https://img.shields.io/badge/built%20with-zig%20cc-F7A41D?logo=zig&logoColor=white)](https://ziglang.org/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-[Quick start](#quick-start) · [Controls](#controls) · [Compatibility](#what-works-and-what-doesnt) · [Building](#building-from-source) · [Known limitations](docs/KNOWN_LIMITATIONS.md) · [Development story](docs/DEVELOPMENT_JOURNEY.md) · [Credits](#credits)
+[Quick start](#quick-start) · [Controls](#controls) · [Compatibility](#what-works-and-what-doesnt) · [Is this safe?](#is-this-safe-to-run) · [Building](#building-from-source) · [Development story](docs/DEVELOPMENT_JOURNEY.md) · [Credits](#credits)
 
 </div>
 
@@ -81,9 +81,17 @@ Full plain-English matrix, connection by connection: **[Controller Compatibility
 
 Both limitations above are genuine Windows/hardware constraints, investigated in depth rather than assumed — the linked sections explain exactly why, and what was tried.
 
-## Before using this with any specific game
+## Is this safe to run?
 
-This tool installs and drives kernel-mode drivers that some anti-cheat systems actively look for and refuse to run alongside. Real, checked findings — not speculation — are in **[docs/KNOWN_LIMITATIONS.md § Anti-cheat](docs/KNOWN_LIMITATIONS.md#anti-cheat)**. Read that before pointing this at any competitive/anti-cheat-protected game. A full `--uninstall` is built in for exactly this reason.
+Yes, for the overwhelming majority of games and use cases. This is worth explaining properly rather than just linking a warning, because "installs drivers" understandably sounds scarier than it is:
+
+- **The three drivers this uses are not obscure or homemade.** vJoy, ViGEmBus, and HidHide are all Microsoft WHQL-signed (verified via `Get-AuthenticodeSignature` — real code-signing, not a self-signed or unsigned package), and all three have been in wide, everyday use for years. ViGEmBus and HidHide together are the same foundation [DS4Windows](https://github.com/Ryochan7/DS4Windows) runs on, a tool with a massive install base among PlayStation-controller-on-PC users. vJoy specifically predates this whole project by a decade and is the de facto standard virtual joystick across the entire flight-sim and sim-racing community — if you've ever mapped a gamepad to a flight stick for a sim, there's a good chance vJoy was already involved.
+- **This is exactly what HOTAS-expecting games actually want.** A flight sim asking for real joystick axes isn't an edge case this tool is sneaking past — it's the intended, designed-for input method for that entire genre. Using vJoy to feed it isn't a workaround or an exploit, it's the standard way that genre of game has always been played with a gamepad.
+- **The actual risk is narrow, specific, and about one thing: kernel-level anti-cheat in competitive multiplayer games.** Some (not most) anti-cheat systems scan for exactly this class of driver and will refuse to launch, or flag it, regardless of whether you're actually doing anything questionable — they can't tell "flight-sim joystick relay" apart from "cheat input injector" at the driver level, so they block the whole category. This has nothing to do with single-player games, the vast majority of multiplayer games without kernel-level anti-cheat, or anything this tool actually does with the data it relays.
+- **One real, specific, confirmed case, so you don't have to guess:** Battlefield 6's "Javelin" anti-cheat refuses to launch with ViGEmBus-based tools running, and has community reports of blocking HidHide too — and BF6 doesn't need this tool anyway, since it has native DualSense support already. That's the one confirmed example found; it is not evidence of a general pattern. Full findings, including what's genuinely uncertain vs. confirmed, are in **[docs/KNOWN_LIMITATIONS.md § Anti-cheat](docs/KNOWN_LIMITATIONS.md#anti-cheat)**.
+- **A full `--uninstall` is built in regardless**, as a real, no-questions-asked way to completely remove all three drivers in one step before playing something you're specifically unsure about — not because this is inherently risky, but because "just don't run it" isn't quite enough for a driver-enumeration scan, and it costs nothing to make removal just as easy as installation.
+
+If you're only ever using this for a HOTAS-style single-player flight/space/vehicle sim, or Normal-mode gamepad use in a game without kernel-level anti-cheat, none of the above needs a second thought.
 
 ## Building from source
 
@@ -132,7 +140,7 @@ This project is a thin layer of glue on top of the real engineering: three drive
 
 Full license texts and copyright notices for all four are in **[THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md)** — please keep them intact if you redistribute this. This project is a small addition on top of a mountain of real driver-development work by the people above; they deserve the credit for what actually makes the hard parts possible.
 
-This project's own code was developed with [Claude Code](https://claude.com/claude-code) doing much of the implementation, debugging, and research, directed and hardware-tested throughout by the project owner.
+This project's own code was developed with AI assistance for much of the implementation, debugging, and research, directed and hardware-tested throughout by the project owner.
 
 ## License
 

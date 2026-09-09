@@ -1,0 +1,15 @@
+# Build output — attach release builds to GitHub Releases instead of committing them
+*.exe
+*.pdb
+*.o
+*.res
+*.obj
+*.ilk
+
+# Runtime-generated files (created next to the exe on first run)
+ruthless_controller_relay.ini
+driver_install_log.txt
+reboot_pending.txt
+pre_uninstall_backup/
+
+dist/

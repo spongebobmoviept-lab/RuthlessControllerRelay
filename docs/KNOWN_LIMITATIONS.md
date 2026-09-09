@@ -1,6 +1,14 @@
 # Known limitations
 
-Both of these are real, deliberately investigated conclusions, not gaps left from lack of effort. Each is written up in enough technical detail here that nobody needs to re-derive it from scratch.
+These are real, deliberately investigated conclusions, not gaps left from lack of effort. Each is written up in enough technical detail here that nobody needs to re-derive it from scratch.
+
+## The Xbox/Guide button can't be used the same way
+
+The PS button on a PlayStation controller can be used as a mode-toggle trigger (see the README's Controls section) because it's captured directly from Sony's own HID report format. The equivalent button on an Xbox controller — variously called the Guide button, the Xbox button, or just "the logo button" — **cannot** be used the same way, and this isn't a missing feature.
+
+**Root cause:** `XINPUT_GAMEPAD`, the official, documented button-state structure Microsoft's XInput API returns, has no bit allocated for the Guide button at all. It's reserved exclusively for Windows itself — pressing it is what opens the Xbox Game Bar overlay — and is architecturally invisible to every application reading a controller through XInput, not just this one. There is no code that could change this; it isn't a matter of finding the right bit or the right API call, the data simply never reaches user-mode XInput consumers in the first place.
+
+**Practical effect:** Xbox controllers default to the standard Back+Start combo as their mode-toggle trigger instead (see the README) — chosen specifically because it's a two-button combo almost no game binds an action to, minimizing (though not eliminating) the chance of it doing something unwanted in a specific game. Unlike the PS button, a Back+Start press *is* still forwarded to whatever the game sees on the virtual gamepad, same as any other button — see the note in the README about why that's a deliberate, unchanged behavior rather than an oversight.
 
 ## Wired Xbox controllers can't be hidden from other apps
 

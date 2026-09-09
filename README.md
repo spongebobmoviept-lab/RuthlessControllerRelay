@@ -54,7 +54,7 @@ Three separate pieces of driver engineering make this possible — **[vJoy](http
 1. Download the latest build from [Releases](../../releases), or [build it yourself](#building-from-source).
 2. Run `RuthlessControllerRelay.exe`. On first run it self-installs vJoy/HidHide/ViGEmBus if they aren't already present (see [how and why](docs/DEVELOPMENT_JOURNEY.md#core-architecture)).
 3. Connect a controller — the dashboard shows what it detected and what it's currently presenting to games.
-4. Press `Ctrl+Alt+H` (or hold Back+Start on the controller) to switch between **HOTAS mode** and **Normal mode**.
+4. Press `Ctrl+Alt+H` (or the controller-side combo shown on the dashboard) to switch between **HOTAS mode** and **Normal mode**.
 
 For a plain-English "is this working right now" guide with no jargon, see the **[Compatibility Cheat Sheet (PDF)](docs/Controller_Compatibility_Cheat_Sheet.pdf)**.
 
@@ -62,11 +62,15 @@ For a plain-English "is this working right now" guide with no jargon, see the **
 
 | Key | Does |
 |---|---|
-| `Ctrl+Alt+H` <br/><sub>(or Back+Start on the controller)</sub> | Switch between HOTAS mode and Normal mode |
+| `Ctrl+Alt+H` <br/><sub>(or the controller combo shown on-screen)</sub> | Switch between HOTAS mode and Normal mode |
 | `V` | Flip the virtual output between PlayStation-style and Xbox-style |
 | `R` | Change the hotkey/button combo for the mode switch above |
 | `M` | Remap a button |
 | `G` | Pick/launch a game |
+
+**The controller-side default depends on what's plugged in the first time you ever run it**: a PlayStation controller (DS4/DualSense) defaults to the **PS button alone** — deliberately picked because no game binds an action to it directly, and it's guaranteed to never reach the game either way (see below). An Xbox controller defaults to **Back+Start** instead, since Xbox has no equivalent button this software — or any XInput-based software — can even see (more on that in [Known Limitations](docs/KNOWN_LIMITATIONS.md#the-xboxguide-button-cant-be-used-the-same-way)). This is decided once, the very first time a controller connects on a fresh install, and never overwritten afterward — change it any time with `R`, or by hand-editing `button=` in `ruthless_controller_relay.ini`.
+
+When the PS button (or touchpad) is configured as the toggle specifically, it's deliberately never also forwarded as a normal vJoy button at the same time — so it can't do double duty as both a mode-switch and a bound joystick action. (This doesn't apply to standard buttons like Back+Start, which keep working as ordinary vJoy buttons even while also serving as the toggle combo — unchanged, long-standing behavior.)
 
 ## What works and what doesn't
 

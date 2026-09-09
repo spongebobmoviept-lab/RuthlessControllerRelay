@@ -214,8 +214,28 @@ static inline void cpu_relax(void) { __builtin_ia32_pause(); }
    own real-world judgment: a two-button combo most games never bind to
    anything is far less likely to fire by accident mid-game than a single
    stick click, which plenty of games DO use for sprint/crouch/etc.). */
-static WORD g_toggle_button_mask = XINPUT_GAMEPAD_BACK | XINPUT_GAMEPAD_START;
+/* DWORD, not WORD: as of the PS-button-as-toggle feature, this can hold
+   PHYS_PS_BUTTON/PHYS_TOUCHPAD (bits 18/19) in addition to the standard
+   XINPUT_GAMEPAD wButtons range (bits 0-15) -- see the main loop's combo
+   check and NAMED_PHYS, which this now shares with the button-remap
+   system instead of keeping its own separate, narrower table. */
+static DWORD g_toggle_button_mask = XINPUT_GAMEPAD_BACK | XINPUT_GAMEPAD_START;
 static DWORD g_toggle_hold_ms = 0;
+/* Set by load_config() only when ruthless_controller_relay.ini didn't
+   exist at all yet (a genuinely fresh install) -- Back+Start above is
+   just a placeholder until the very first controller actually connects,
+   at which point the connect loop upgrades this to the PS button
+   instead, but ONLY for a real PlayStation controller (see the
+   g_backend assignment in the connect loop) -- a good default there
+   specifically because no game ever binds an action to it and it's
+   already guaranteed invisible to whatever the game sees (see
+   send_rumble_led_to_real_ps_controller() and the vJoy button loop's
+   ps_is_toggle handling). Xbox has no equivalent button XInput can even
+   see, so Back+Start stays exactly as it already was for that case.
+   Cleared the moment it's used (or the moment a real ini is found at
+   all), so this can only ever fire once, on a genuinely first-ever run
+   -- an existing friend's already-configured combo is never touched. */
+static int g_toggle_button_is_fresh_default = 0;
 
 /* Which backend actually found the current controller -- set by main(),
    read by the label/dashboard code below so button names match whichever
@@ -883,24 +903,15 @@ static void format_hotkey(char *buf, size_t len, UINT mods, UINT vk) {
     strncat(buf, keybuf, len - strlen(buf) - 1);
 }
 
-typedef struct { const char *name; WORD mask; } NamedButton;
-static const NamedButton NAMED_BUTTONS[] = {
-    {"a", XINPUT_GAMEPAD_A},         {"b", XINPUT_GAMEPAD_B},
-    {"x", XINPUT_GAMEPAD_X},         {"y", XINPUT_GAMEPAD_Y},
-    {"lb", XINPUT_GAMEPAD_LEFT_SHOULDER}, {"rb", XINPUT_GAMEPAD_RIGHT_SHOULDER},
-    {"back", XINPUT_GAMEPAD_BACK},   {"start", XINPUT_GAMEPAD_START},
-    {"l3", XINPUT_GAMEPAD_LEFT_THUMB}, {"r3", XINPUT_GAMEPAD_RIGHT_THUMB},
-    {"dpad_up", XINPUT_GAMEPAD_DPAD_UP}, {"dpad_down", XINPUT_GAMEPAD_DPAD_DOWN},
-    {"dpad_left", XINPUT_GAMEPAD_DPAD_LEFT}, {"dpad_right", XINPUT_GAMEPAD_DPAD_RIGHT},
-};
-
-/* Separate, DWORD-sized table for g_button_map persistence/parsing --
-   NAMED_BUTTONS above is WORD-sized and used only for the toggle
-   button-combo, which genuinely can't include a trigger click (it's
-   checked against wButtons alone, which triggers never set), so widening
-   that table to fit PHYS_TRIGGER_L/R would let a trigger silently get
-   picked for the toggle and then never fire. This one covers every slot
-   g_button_map can hold, triggers included. */
+/* Shared by both the button-remap system (g_button_map) AND the toggle
+   button-combo (g_toggle_button_mask) -- until the PS-button-as-toggle
+   feature, the toggle combo used a separate, WORD-sized NAMED_BUTTONS
+   table restricted to the standard XINPUT_GAMEPAD wButtons range, since
+   the main loop's combo check only ever compared against wButtons. Now
+   that the combo check builds the same wButtons+trigger+PS+touchpad
+   combined mask read_any_physical_input() does (see the main loop), a
+   toggle combo can validly include any of these, so the separate table
+   was removed rather than kept in sync with two parsers by hand. */
 typedef struct { const char *name; DWORD phys; } NamedPhys;
 static const NamedPhys NAMED_PHYS[] = {
     {"a", XINPUT_GAMEPAD_A},
@@ -940,16 +951,6 @@ static const char *ini_name_for_phys(DWORD phys) {
     return "a"; /* unreachable in practice -- g_button_map only ever holds NAMED_PHYS values */
 }
 
-static int parse_button_name(const char *name, WORD *mask_out) {
-    for (size_t i = 0; i < sizeof(NAMED_BUTTONS) / sizeof(NAMED_BUTTONS[0]); i++) {
-        if (!strcmp(name, NAMED_BUTTONS[i].name)) {
-            *mask_out = NAMED_BUTTONS[i].mask;
-            return 1;
-        }
-    }
-    return 0;
-}
-
 /* Parses "back+start:1000"-style text: one or two button names (joined by
    +) and an optional :milliseconds hold requirement. Returns 0 if no
    recognizable button was found (caller should warn and fall back to the
@@ -958,7 +959,7 @@ static int parse_button_name(const char *name, WORD *mask_out) {
    "not both may be none" rule this is half of. mask=0 is already the
    existing runtime sentinel for "disabled" (the main loop's combo check
    already requires mask != 0), so no new sentinel is needed here. */
-static int parse_button_line(const char *line, WORD *mask_out, DWORD *hold_ms_out) {
+static int parse_button_line(const char *line, DWORD *mask_out, DWORD *hold_ms_out) {
     char buf[128];
     strncpy(buf, line, sizeof(buf) - 1);
     buf[sizeof(buf) - 1] = '\0';
@@ -986,13 +987,13 @@ static int parse_button_line(const char *line, WORD *mask_out, DWORD *hold_ms_ou
         *colon = '\0';
     }
 
-    WORD mask = 0;
+    DWORD mask = 0;
     int got_button = 0;
     char *tok = strtok(buf, "+ \t\r\n");
     while (tok) {
         for (char *p = tok; *p; p++) *p = (char)tolower((unsigned char)*p);
-        WORD m;
-        if (parse_button_name(tok, &m)) {
+        DWORD m;
+        if (parse_phys_name(tok, &m)) {
             mask |= m;
             got_button = 1;
         }
@@ -1004,19 +1005,19 @@ static int parse_button_line(const char *line, WORD *mask_out, DWORD *hold_ms_ou
     return 1;
 }
 
-static void format_button_combo(char *buf, size_t len, WORD mask, DWORD hold_ms) {
+static void format_button_combo(char *buf, size_t len, DWORD mask, DWORD hold_ms) {
     buf[0] = '\0';
     if (mask == 0) { /* explicitly disabled, see parse_button_line()'s "none" handling */
         strncat(buf, "None", len - strlen(buf) - 1);
         return;
     }
     int first = 1;
-    for (size_t i = 0; i < sizeof(NAMED_BUTTONS) / sizeof(NAMED_BUTTONS[0]); i++) {
-        if (mask & NAMED_BUTTONS[i].mask) {
+    for (size_t i = 0; i < sizeof(NAMED_PHYS) / sizeof(NAMED_PHYS[0]); i++) {
+        if (mask & NAMED_PHYS[i].phys) {
             if (!first) strncat(buf, "+", len - strlen(buf) - 1);
             char up[16];
-            snprintf(up, sizeof(up), "%c%s", (char)toupper((unsigned char)NAMED_BUTTONS[i].name[0]),
-                     NAMED_BUTTONS[i].name + 1);
+            snprintf(up, sizeof(up), "%c%s", (char)toupper((unsigned char)NAMED_PHYS[i].name[0]),
+                     NAMED_PHYS[i].name + 1);
             strncat(buf, up, len - strlen(buf) - 1);
             first = 0;
         }
@@ -1206,7 +1207,7 @@ static void get_config_path(char *path, size_t len) {
    both to create it fresh on first run and to save changes made through
    the in-software remap/set-game flows (R / G while the dashboard is up),
    so a friend never has to hand-edit this file for the normal case. */
-static void save_config(UINT mods, UINT vk, WORD button_mask, DWORD hold_ms, const char *game_path) {
+static void save_config(UINT mods, UINT vk, DWORD button_mask, DWORD hold_ms, const char *game_path) {
     char path[MAX_PATH + 32];
     get_config_path(path, sizeof(path));
     FILE *out = fopen(path, "w");
@@ -1246,7 +1247,12 @@ static void save_config(UINT mods, UINT vk, WORD button_mask, DWORD hold_ms, con
         "#\n"
         "# button: one controller button, or two joined with + for a combo (so\n"
         "# it can't be triggered by accident) -- a, b, x, y, lb, rb, back, start,\n"
-        "# l3, r3, dpad_up, dpad_down, dpad_left, dpad_right. Optionally add\n"
+        "# l3, r3, dpad_up, dpad_down, dpad_left, dpad_right, lt, rt, and on a\n"
+        "# PlayStation controller, ps or touchpad. The PS button in particular is\n"
+        "# a good single-button choice: no game binds an action to it directly (it\n"
+        "# normally just opens a system overlay this software never lets through\n"
+        "# to begin with, since the real controller stays fully hidden), so it\n"
+        "# can't collide with anything the game itself does. Optionally add\n"
         "# :milliseconds to require holding it that long, e.g. back+start:1000\n"
         "# for a 1-second hold of Back+Start together. Set either hotkey= or\n"
         "# button= (not both) to \"none\" to disable just that one and rely only\n"
@@ -1265,8 +1271,8 @@ static void save_config(UINT mods, UINT vk, WORD button_mask, DWORD hold_ms, con
         fprintf(out, "none");
     } else {
         long before_names = ftell(out);
-        for (size_t i = 0; i < sizeof(NAMED_BUTTONS) / sizeof(NAMED_BUTTONS[0]); i++) {
-            if (button_mask & NAMED_BUTTONS[i].mask) fprintf(out, "%s+", NAMED_BUTTONS[i].name);
+        for (size_t i = 0; i < sizeof(NAMED_PHYS) / sizeof(NAMED_PHYS[0]); i++) {
+            if (button_mask & NAMED_PHYS[i].phys) fprintf(out, "%s+", NAMED_PHYS[i].name);
         }
         if (ftell(out) > before_names) fseek(out, -1, SEEK_CUR); /* trim the trailing + -- only if something was
                                                                       actually written to trim */
@@ -1291,7 +1297,7 @@ static void save_config(UINT mods, UINT vk, WORD button_mask, DWORD hold_ms, con
     fclose(out);
 }
 
-static void load_config(UINT *mods_out, UINT *vk_out, WORD *button_mask_out, DWORD *hold_ms_out,
+static void load_config(UINT *mods_out, UINT *vk_out, DWORD *button_mask_out, DWORD *hold_ms_out,
                          char *game_path_out, size_t game_path_len) {
     *mods_out = MOD_CONTROL | MOD_ALT;
     *vk_out = 'H';
@@ -1305,7 +1311,10 @@ static void load_config(UINT *mods_out, UINT *vk_out, WORD *button_mask_out, DWO
     FILE *f = fopen(path, "r");
     if (!f) {
         save_config(*mods_out, *vk_out, *button_mask_out, *hold_ms_out, "");
-        return; /* using the Ctrl+Alt+H / R3 defaults set above */
+        g_toggle_button_is_fresh_default = 1; /* genuinely first-ever run -- let the connect loop upgrade
+                                                   this to the PS button once it knows the real controller
+                                                   type, see g_toggle_button_is_fresh_default's own comment */
+        return; /* using the Ctrl+Alt+H / Back+Start defaults set above, for now */
     }
 
     char line[256];
@@ -1322,7 +1331,7 @@ static void load_config(UINT *mods_out, UINT *vk_out, WORD *button_mask_out, DWO
                 fprintf(stderr, "Warning: couldn't parse hotkey= line in %s, using Ctrl+Alt+H.\n", HOTKEY_CONFIG_FILE);
             }
         } else if (!strncmp(p, "button=", 7)) {
-            WORD mask;
+            DWORD mask;
             DWORD hold_ms;
             if (parse_button_line(p + 7, &mask, &hold_ms)) {
                 *button_mask_out = mask;
@@ -4029,37 +4038,6 @@ static void vigem_update(const XINPUT_GAMEPAD *gp) {
     LeaveCriticalSection(&g_output_lock);
 }
 
-static WORD read_current_buttons(backend_t backend, int userIndex) {
-    if (backend == BACKEND_XINPUT) {
-        XINPUT_STATE st;
-        if (pXInputGetState((DWORD)userIndex, &st) == ERROR_SUCCESS) return st.Gamepad.wButtons;
-        return 0;
-    }
-    if (backend == BACKEND_DS4_RAWHID) {
-        XINPUT_GAMEPAD gp;
-        return poll_ds4_raw_hid(&gp) ? gp.wButtons : 0;
-    }
-    if (backend == BACKEND_DUALSENSE_RAWHID) {
-        XINPUT_GAMEPAD gp;
-        return poll_dualsense_raw_hid(&gp) ? gp.wButtons : 0;
-    }
-    if (backend == BACKEND_DS4_WIRED_RAWHID) {
-        XINPUT_GAMEPAD gp;
-        return poll_ds4_wired_raw_hid(&gp) ? gp.wButtons : 0;
-    }
-    if (backend == BACKEND_DUALSENSE_WIRED_RAWHID) {
-        XINPUT_GAMEPAD gp;
-        return poll_dualsense_wired_raw_hid(&gp) ? gp.wButtons : 0;
-    }
-    DIJOYSTATE2 js;
-    if (poll_dinput(&js)) {
-        XINPUT_GAMEPAD gp;
-        dinput_to_xinput_gamepad(&js, &gp);
-        return gp.wButtons;
-    }
-    return 0;
-}
-
 /* Blocks (deliberately -- remapping is a quick, one-off, before-the-game
    action, not something that needs to stay live during actual relaying)
    until a key from a reasonable candidate set is held down, then reads
@@ -4090,17 +4068,28 @@ static void capture_hotkey_from_keyboard(UINT *mods_out, UINT *vk_out) {
     }
 }
 
+/* Forward declaration -- read_any_physical_input() is defined further
+   down (it also backs the M-remap flow's capture), but this toggle-combo
+   capture function needs it too now that the PS button/touchpad can be
+   part of a toggle combo, not just the plain wButtons range. */
+static DWORD read_any_physical_input(backend_t backend, int userIndex);
+
 /* Same idea for the controller side: wait for a clean release (in case
    something's already held from getting here), then wait for something to
    be pressed and confirm it's still held ~150ms later, so a single noisy
-   blip on the way to the real press doesn't get captured by mistake. */
-static WORD capture_button_from_controller(backend_t backend, int userIndex) {
-    while (read_current_buttons(backend, userIndex) != 0) Sleep(20);
+   blip on the way to the real press doesn't get captured by mistake.
+   DWORD, not WORD, since the toggle combo can now include the PS button/
+   touchpad (PHYS_PS_BUTTON/PHYS_TOUCHPAD) or a trigger click, the same
+   physical inputs the M-remap flow's own capture already recognizes --
+   see read_any_physical_input()'s own comment for why those don't fit in
+   XINPUT_GAMEPAD's wButtons range. */
+static DWORD capture_button_from_controller(backend_t backend, int userIndex) {
+    while (read_any_physical_input(backend, userIndex) != 0) Sleep(20);
     for (;;) {
-        WORD now_pressed = read_current_buttons(backend, userIndex);
+        DWORD now_pressed = read_any_physical_input(backend, userIndex);
         if (now_pressed != 0) {
             Sleep(150);
-            if (read_current_buttons(backend, userIndex) == now_pressed) return now_pressed;
+            if (read_any_physical_input(backend, userIndex) == now_pressed) return now_pressed;
         }
         Sleep(20);
     }
@@ -4126,8 +4115,11 @@ static void run_remap_flow(backend_t backend, int userIndex) {
     set_color(CLR_NORMAL);
 
     printf("Now press the controller button you want (hold two together for a\n");
-    printf("combo), and keep holding it steady for a moment...\n");
-    WORD new_mask = capture_button_from_controller(backend, userIndex);
+    printf("combo -- the PS button works well alone too, on a PlayStation\n");
+    printf("controller: no game ever binds an action to it directly, and it\n");
+    printf("never reaches the game anyway), and keep holding it steady for a\n");
+    printf("moment...\n");
+    DWORD new_mask = capture_button_from_controller(backend, userIndex);
     char btn[48];
     format_button_combo(btn, sizeof(btn), new_mask, 0);
     set_color(CLR_GREEN_BR);
@@ -4146,15 +4138,16 @@ static void run_remap_flow(backend_t backend, int userIndex) {
     clear_console();
 }
 
-/* Wider than read_current_buttons() above -- that one only covers the
-   toggle hotkey/button combo's original wButtons-range (deliberately: a
-   combo including a trigger click can't be checked the same way the main
-   loop checks it, see the NAMED_PHYS comment). This one covers every
-   physical input g_button_map can drive a vJoy button from -- trigger
+/* Covers every physical input g_button_map (and, as of the PS-button-as-
+   toggle feature, the toggle combo too) can be driven from -- trigger
    clicks and, on DirectInput or either raw-HID Sony backend, the PS
-   button and touchpad click -- so run_button_map_flow() (press M) can
-   remap ANY of them, not just the ones that happen to fit in
-   XINPUT_GAMEPAD's own bitmask. */
+   button and touchpad click -- not just what fits in XINPUT_GAMEPAD's
+   own wButtons bitmask. Used by both run_button_map_flow() (press M) and
+   capture_button_from_controller() above, and by the main loop's own
+   toggle-combo check, which builds this exact same combined mask from
+   its own already-polled gp/g_ps_pressed/g_touchpad_pressed instead of
+   calling this function again (that would re-poll the device a second
+   time this same frame). */
 static DWORD read_any_physical_input(backend_t backend, int userIndex) {
     XINPUT_GAMEPAD gp;
     int ps_pressed = 0, touchpad_pressed = 0;
@@ -4193,11 +4186,13 @@ static DWORD read_any_physical_input(backend_t backend, int userIndex) {
     return mask;
 }
 
-/* Same shape as capture_button_from_controller() above, just backed by
-   read_any_physical_input() instead of read_current_buttons() -- kept as
-   a separate function rather than adding a flag to the existing one so
-   the toggle-combo capture path can't accidentally start accepting a
-   trigger/PS/touchpad press it has no way to actually check for later. */
+/* Same read_any_physical_input() source as capture_button_from_controller()
+   above, but validated single-button-only (see is_single_mapped_button()
+   below) -- kept as a separate function since the toggle combo is allowed
+   to be two buttons held together (that's the whole point of a combo,
+   see NAMED_PHYS-based parse_button_line() above) while a button-map (M)
+   remap target must be exactly one recognizable physical input, never an
+   ambiguous multi-button press. */
 /* Only a mask that maps to EXACTLY one g_button_map slot is a valid single
    press -- rejects both "nothing pressed" (0) and an accidental multi-button
    press (e.g. a resting analog trigger just past TRIGGER_CLICK_THRESHOLD
@@ -6026,7 +6021,7 @@ int main(int argc, char **argv) {
     if (argc > 1 && !strcmp(argv[1], "--test-config")) {
         int failed = 0;
         UINT mods, vk;
-        WORD mask;
+        DWORD mask;
         DWORD hold_ms;
 
 #define CHECK(cond, desc) do { \
@@ -6050,11 +6045,23 @@ int main(int argc, char **argv) {
         CHECK(parse_button_line("none", &mask, &hold_ms) == 2 && mask == 0, "\"none\" disables");
         CHECK(parse_button_line(" None ", &mask, &hold_ms) == 2 && mask == 0, "\"none\" is case/whitespace-insensitive");
         CHECK(parse_button_line("not_a_button", &mask, &hold_ms) == 0, "garbage -> unparseable");
+        /* New with the PS-button-as-toggle feature: the toggle combo now
+           shares NAMED_PHYS with the button-remap system instead of its
+           own separate, narrower table, so "ps"/"touchpad" (and lt/rt)
+           need to parse here too, not just in the buttonmap= path. */
+        CHECK(parse_button_line("ps", &mask, &hold_ms) == 1 && mask == PHYS_PS_BUTTON,
+              "\"ps\" parses to PHYS_PS_BUTTON");
+        CHECK(parse_button_line("touchpad", &mask, &hold_ms) == 1 && mask == PHYS_TOUCHPAD,
+              "\"touchpad\" parses to PHYS_TOUCHPAD");
+        CHECK(parse_button_line("ps+touchpad", &mask, &hold_ms) == 1 &&
+              mask == (PHYS_PS_BUTTON | PHYS_TOUCHPAD), "\"ps+touchpad\" combo parses");
 
         printf("== format_hotkey / format_button_combo ==\n");
         char buf[48];
         format_hotkey(buf, sizeof(buf), 0, 0);
         CHECK(!strcmp(buf, "None"), "format_hotkey shows None for vk=0");
+        format_button_combo(buf, sizeof(buf), PHYS_PS_BUTTON, 0);
+        CHECK(!strcmp(buf, "Ps"), "format_button_combo shows Ps for PHYS_PS_BUTTON");
         format_button_combo(buf, sizeof(buf), 0, 0);
         CHECK(!strcmp(buf, "None"), "format_button_combo shows None for mask=0");
 
@@ -6340,6 +6347,29 @@ int main(int argc, char **argv) {
                                  device down, if this process ends while still connected */
         was_ever_connected = 1;
         g_backend = backend; /* so label_for_phys()/render_dashboard() show the right names */
+
+        /* Smart first-run default, only ever decided once (see
+           g_toggle_button_is_fresh_default's own comment): a genuinely
+           fresh install's first-ever connected controller decides whether
+           the default toggle combo should be the PS button instead of
+           Back+Start. Only upgrades for an actual PlayStation controller
+           -- an Xbox/HOTAS-only first connect leaves Back+Start exactly
+           as it already was, since Xbox has no equivalent button this
+           software can even see. */
+        if (g_toggle_button_is_fresh_default) {
+            g_toggle_button_is_fresh_default = 0; /* decide this at most once, ever */
+            int is_ps_controller =
+                backend == BACKEND_DS4_RAWHID || backend == BACKEND_DUALSENSE_RAWHID ||
+                backend == BACKEND_DS4_WIRED_RAWHID || backend == BACKEND_DUALSENSE_WIRED_RAWHID;
+            if (!is_ps_controller && backend == BACKEND_DINPUT) {
+                is_ps_controller = (WORD)(g_dinput_vid_pid & 0xFFFFu) == 0x054C;
+            }
+            if (is_ps_controller) {
+                g_toggle_button_mask = PHYS_PS_BUTTON;
+                save_config(g_hotkey_mods, g_hotkey_vk, g_toggle_button_mask, g_toggle_hold_ms, g_game_path);
+            }
+        }
+
         /* REAL BUG found and fixed 2026-09-08, on real hardware: registering
            this AFTER vigem_setup() (or retrying it later from the live
            loop, which was the first attempt at this fix) can find and hide
@@ -6572,6 +6602,22 @@ int main(int argc, char **argv) {
                     pSetAxis(vjoy_muted ? i16_to_axis(0) : i16_to_axis(gp.sThumbRX), rid, HID_USAGE_RX);
                     pSetAxis(vjoy_muted ? i16_to_axis(0) : i16_to_axis(nry), rid, HID_USAGE_RY);
 
+                    /* Whenever the PS button or touchpad is (part of) the
+                       configured toggle combo, a press of it is consumed
+                       for that purpose and deliberately never ALSO forwarded
+                       as a normal vJoy button -- otherwise pressing it to
+                       switch modes would simultaneously fire whatever vJoy
+                       button it happens to be mapped to (PS is button 17 by
+                       default), a confusing double-duty press. Scoped to
+                       just these two: A/B/X/Y/etc. staying part of both the
+                       toggle AND their own vJoy button (e.g. the Back+Start
+                       default) is long-standing, unchanged behavior -- only
+                       PS/touchpad get this treatment, since they're the ones
+                       explicitly meant to double as an game-invisible toggle
+                       (see the button= ini comment in save_config()). */
+                    int ps_is_toggle = (g_toggle_button_mask & PHYS_PS_BUTTON) != 0;
+                    int touchpad_is_toggle = (g_toggle_button_mask & PHYS_TOUCHPAD) != 0;
+
                     /* Every vJoy button 1-NUM_VJOY_BUTTONS is driven by
                        whichever physical input g_button_map says --
                        data-driven instead of a fixed A=1/B=2/... sequence so
@@ -6582,8 +6628,8 @@ int main(int argc, char **argv) {
                         int pressed = vjoy_muted ? 0
                                       : phys == PHYS_TRIGGER_L   ? gp.bLeftTrigger > TRIGGER_CLICK_THRESHOLD
                                       : phys == PHYS_TRIGGER_R ? gp.bRightTrigger > TRIGGER_CLICK_THRESHOLD
-                                      : phys == PHYS_PS_BUTTON  ? g_ps_pressed
-                                      : phys == PHYS_TOUCHPAD   ? g_touchpad_pressed
+                                      : phys == PHYS_PS_BUTTON  ? (ps_is_toggle ? 0 : g_ps_pressed)
+                                      : phys == PHYS_TOUCHPAD   ? (touchpad_is_toggle ? 0 : g_touchpad_pressed)
                                                                 : (gp.wButtons & phys) != 0;
                         pSetBtn(pressed, rid, (UCHAR)(b + 1));
                     }
@@ -6599,10 +6645,23 @@ int main(int argc, char **argv) {
                 /* The configured controller button(s) also trigger the same
                    hide/unhide toggle as the keyboard hotkey -- fires once
                    per press (or once per completed hold, for a combo with a
-                   hold requirement), not repeatedly while held. Still work
-                   as normal vJoy buttons too (set above), this is additive. */
+                   hold requirement), not repeatedly while held. Checked
+                   against the same combined wButtons+trigger+PS+touchpad
+                   mask read_any_physical_input() builds (recomputed here
+                   from this frame's already-polled gp/g_ps_pressed/
+                   g_touchpad_pressed, not by calling that function again --
+                   it does its own device poll, which this frame already
+                   did once above) -- not just gp.wButtons alone, now that
+                   the toggle combo can include the PS button or touchpad
+                   (see NAMED_PHYS/parse_button_line above). Runs regardless
+                   of HOTAS/Normal mode -- the toggle has to work in both. */
+                DWORD live_phys_mask = gp.wButtons;
+                if (gp.bLeftTrigger > TRIGGER_CLICK_THRESHOLD) live_phys_mask |= PHYS_TRIGGER_L;
+                if (gp.bRightTrigger > TRIGGER_CLICK_THRESHOLD) live_phys_mask |= PHYS_TRIGGER_R;
+                if (g_ps_pressed) live_phys_mask |= PHYS_PS_BUTTON;
+                if (g_touchpad_pressed) live_phys_mask |= PHYS_TOUCHPAD;
                 int combo_now =
-                    g_toggle_button_mask != 0 && (gp.wButtons & g_toggle_button_mask) == g_toggle_button_mask;
+                    g_toggle_button_mask != 0 && (live_phys_mask & g_toggle_button_mask) == g_toggle_button_mask;
                 if (combo_now && !combo_was) {
                     QueryPerformanceCounter(&combo_start); /* start of this hold */
                     combo_fired = 0;

@@ -182,6 +182,86 @@ typedef DWORD(WINAPI *XInputGetBatteryInformation_t)(DWORD, BYTE, XINPUT_BATTERY
 static XInputGetState_t pXInputGetState;
 static XInputSetState_t pXInputSetState;
 static XInputGetBatteryInformation_t pXInputGetBatteryInformation;
+/* Undocumented sibling of XInputGetState, exported by ordinal 100 only
+   (no name, no header, not in any Microsoft documentation) -- same
+   signature and same XINPUT_STATE shape, but additionally sets bit
+   0x0400 in wButtons for the Guide/Xbox button, which the documented
+   XInputGetState never reports at all (Microsoft reserves that button
+   for the OS's own Xbox Game Bar). Real, stable, and used by other real
+   projects (e.g. Xidi, a maintained XInput/DirectInput remapping
+   library) -- but genuinely unsupported, so every call site must
+   tolerate GetProcAddress returning NULL (a future xinput dll build
+   could remove it) and fall back to plain pXInputGetState's already-
+   proven behavior, never fail outright over this one extra bit. */
+#define XINPUT_GAMEPAD_GUIDE 0x0400
+typedef DWORD(WINAPI *XInputGetStateEx_t)(DWORD, XINPUT_STATE *);
+static XInputGetStateEx_t pXInputGetStateEx;
+
+/* Windows' own Xbox Game Bar captures the Guide button system-wide to
+   open its overlay -- confirmed (a real XInput-remapping-library
+   maintainer's own account) that this ALSO prevents XInputGetStateEx's
+   Guide bit from ever being meaningfully set, not just a "something else
+   pops up on screen" cosmetic issue. Controlled by one HKCU registry
+   DWORD. These three globals track whether THIS session has touched it,
+   so it can be put back exactly as found -- same read-before-write,
+   restore-on-every-exit discipline as the vJoy OEMName backup before an
+   uninstall, or HidHide's own cloak-off. Deliberately conservative: any
+   failure at any step (key missing and uncreatable, no permission, etc.)
+   just leaves the Guide button unavailable this session -- never fatal,
+   never assumed to have silently worked. */
+static int g_gamebar_reg_touched = 0;
+static int g_gamebar_reg_had_value = 0;
+static DWORD g_gamebar_reg_original = 1; /* Windows' own documented default when the value is absent */
+static int g_gamebar_guide_disabled = 0; /* 1 once really confirmed off this session -- see disable_gamebar_guide_capture() */
+
+static void log_line(const char *fmt, ...); /* defined further below -- shared diagnostic log, needed here too */
+
+static void disable_gamebar_guide_capture(void) {
+    if (g_gamebar_reg_touched) return; /* already done this session -- idempotent, matches every other setup-once pattern here */
+    HKEY key;
+    if (RegOpenKeyExA(HKEY_CURRENT_USER, "SOFTWARE\\Microsoft\\GameBar", 0, KEY_READ | KEY_WRITE, &key) != ERROR_SUCCESS) {
+        if (RegCreateKeyExA(HKEY_CURRENT_USER, "SOFTWARE\\Microsoft\\GameBar", 0, NULL, 0,
+                             KEY_READ | KEY_WRITE, NULL, &key, NULL) != ERROR_SUCCESS) {
+            return; /* can't touch it at all -- Guide button just stays unavailable this session */
+        }
+    }
+    DWORD value = 0, size = sizeof(value), type = REG_DWORD;
+    LONG q = RegQueryValueExA(key, "UseNexusForGameBarEnabled", NULL, &type, (LPBYTE)&value, &size);
+    g_gamebar_reg_had_value = (q == ERROR_SUCCESS && type == REG_DWORD);
+    g_gamebar_reg_original = g_gamebar_reg_had_value ? value : 1;
+    DWORD zero = 0;
+    if (RegSetValueExA(key, "UseNexusForGameBarEnabled", 0, REG_DWORD, (const BYTE *)&zero, sizeof(zero)) == ERROR_SUCCESS) {
+        g_gamebar_reg_touched = 1;
+        g_gamebar_guide_disabled = 1;
+        log_line("gamebar: disabled guide-button capture for this session (was %s)",
+                 g_gamebar_reg_had_value ? "1" : "not set");
+    }
+    RegCloseKey(key);
+}
+
+/* Called from every exit path this project already treats as "undo
+   whatever this session changed" (console_ctrl_handler(), fatal_exit(),
+   and the main loop's own Xbox-controller-disconnect cleanup) -- exactly
+   mirrors HidHide's own cloak-off placement. If the value never existed
+   before this session touched it, deletes it back to that same
+   nonexistent state rather than leaving a "0" behind that wasn't there
+   originally -- the whole point of saving g_gamebar_reg_had_value. */
+static void restore_gamebar_guide_capture(void) {
+    if (!g_gamebar_reg_touched) return;
+    HKEY key;
+    if (RegOpenKeyExA(HKEY_CURRENT_USER, "SOFTWARE\\Microsoft\\GameBar", 0, KEY_SET_VALUE, &key) == ERROR_SUCCESS) {
+        if (g_gamebar_reg_had_value) {
+            RegSetValueExA(key, "UseNexusForGameBarEnabled", 0, REG_DWORD,
+                            (const BYTE *)&g_gamebar_reg_original, sizeof(g_gamebar_reg_original));
+        } else {
+            RegDeleteValueA(key, "UseNexusForGameBarEnabled");
+        }
+        RegCloseKey(key);
+        log_line("gamebar: restored guide-button capture to its original state");
+    }
+    g_gamebar_reg_touched = 0;
+    g_gamebar_guide_disabled = 0;
+}
 
 /* Hints the CPU we're in a spin-wait (the x86 PAUSE instruction) -- lower
    power/heat and friendlier to a hyperthreading sibling than a bare empty
@@ -215,26 +295,31 @@ static inline void cpu_relax(void) { __builtin_ia32_pause(); }
    anything is far less likely to fire by accident mid-game than a single
    stick click, which plenty of games DO use for sprint/crouch/etc.). */
 /* DWORD, not WORD: as of the PS-button-as-toggle feature, this can hold
-   PHYS_PS_BUTTON/PHYS_TOUCHPAD (bits 18/19) in addition to the standard
-   XINPUT_GAMEPAD wButtons range (bits 0-15) -- see the main loop's combo
-   check and NAMED_PHYS, which this now shares with the button-remap
-   system instead of keeping its own separate, narrower table. */
+   PHYS_PS_BUTTON/PHYS_TOUCHPAD/PHYS_GUIDE_BUTTON (bits 18-20) in addition
+   to the standard XINPUT_GAMEPAD wButtons range (bits 0-15) -- see the
+   main loop's combo check and NAMED_PHYS, which this now shares with the
+   button-remap system instead of keeping its own separate, narrower
+   table. */
 static DWORD g_toggle_button_mask = XINPUT_GAMEPAD_BACK | XINPUT_GAMEPAD_START;
 static DWORD g_toggle_hold_ms = 0;
 /* Set by load_config() only when ruthless_controller_relay.ini didn't
    exist at all yet (a genuinely fresh install) -- Back+Start above is
    just a placeholder until the very first controller actually connects,
-   at which point the connect loop upgrades this to the PS button
-   instead, but ONLY for a real PlayStation controller (see the
-   g_backend assignment in the connect loop) -- a good default there
-   specifically because no game ever binds an action to it and it's
-   already guaranteed invisible to whatever the game sees (see
-   send_rumble_led_to_real_ps_controller() and the vJoy button loop's
-   ps_is_toggle handling). Xbox has no equivalent button XInput can even
-   see, so Back+Start stays exactly as it already was for that case.
-   Cleared the moment it's used (or the moment a real ini is found at
-   all), so this can only ever fire once, on a genuinely first-ever run
-   -- an existing friend's already-configured combo is never touched. */
+   at which point the connect loop upgrades this to the PS button (real
+   PlayStation controller) or the Guide button (Xbox controller, see
+   PHYS_GUIDE_BUTTON/XInputGetStateEx_t) -- good defaults for the same
+   reason in both cases: no game binds an action to either one directly,
+   and both are guaranteed to never leak through to whatever the game
+   sees (see send_rumble_led_to_real_ps_controller()/vigem_update() for
+   PS, and the vJoy button loop's ps_is_toggle/guide_is_toggle handling
+   for both). The Guide path also flips a real Windows registry setting
+   for the session (see disable_gamebar_guide_capture()) -- confirmed
+   working end-to-end on real hardware 2026-09-09, including through the
+   official Xbox Wireless Adapter dongle. Back+Start is now only the
+   actual default for a HOTAS-only device with neither button. Cleared
+   the moment it's used (or the moment a real ini is found at all), so
+   this can only ever fire once, on a genuinely first-ever run -- an
+   existing friend's already-configured combo is never touched. */
 static int g_toggle_button_is_fresh_default = 0;
 
 /* Which backend actually found the current controller -- set by main(),
@@ -315,6 +400,15 @@ static int g_have_dinput_raw = 0;
    these need their own side channel instead of living on `gp`. */
 static int g_ps_pressed = 0;
 static int g_touchpad_pressed = 0;
+/* Guide/Xbox button state, XInput only, mirrors g_ps_pressed's reasoning
+   exactly -- XINPUT_GAMEPAD.wButtons has no bit for it either (see
+   XInputGetStateEx_t's comment), so it needs the same side channel.
+   Only ever set when pXInputGetStateEx is actually available AND the
+   Game Bar registry toggle is currently disabled by this session (see
+   g_gamebar_guide_disabled) -- otherwise stays 0, same as if the button
+   didn't exist, matching every other "optional capability" pattern in
+   this file (pXInputSetState, pXInputGetBatteryInformation). */
+static int g_guide_pressed = 0;
 
 /* Trigger clicks, the PS button, and the touchpad click aren't real
    wButtons bits (see the hair-trigger comment further down -- the PS
@@ -325,6 +419,7 @@ static int g_touchpad_pressed = 0;
 #define PHYS_TRIGGER_R 0x20000u
 #define PHYS_PS_BUTTON 0x40000u
 #define PHYS_TOUCHPAD 0x80000u
+#define PHYS_GUIDE_BUTTON 0x100000u
 #define TRIGGER_CLICK_THRESHOLD 26  // ~10% of XInput's 0-255 trigger range, hair-trigger feel
 
 /* rgbButtons[] indices for the DS4's PS button and touchpad click, in
@@ -424,6 +519,7 @@ static const char *label_for_phys(DWORD phys, backend_t backend) {
     if (phys == PHYS_TRIGGER_R) return ps ? "R2 click" : "RT click";
     if (phys == PHYS_PS_BUTTON) return "PS";       /* DS4/DS5 only -- XInput has no Guide-button bit */
     if (phys == PHYS_TOUCHPAD) return "Touchpad";  /* DS4/DS5 only */
+    if (phys == PHYS_GUIDE_BUTTON) return "Guide"; /* Xbox only -- see XInputGetStateEx_t's comment */
     return "?";
 }
 
@@ -932,6 +1028,7 @@ static const NamedPhys NAMED_PHYS[] = {
     {"rt", PHYS_TRIGGER_R},
     {"ps", PHYS_PS_BUTTON},
     {"touchpad", PHYS_TOUCHPAD},
+    {"guide", PHYS_GUIDE_BUTTON},
 };
 
 static int parse_phys_name(const char *name, DWORD *out) {
@@ -1252,11 +1349,23 @@ static void save_config(UINT mods, UINT vk, DWORD button_mask, DWORD hold_ms, co
         "# a good single-button choice: no game binds an action to it directly (it\n"
         "# normally just opens a system overlay this software never lets through\n"
         "# to begin with, since the real controller stays fully hidden), so it\n"
-        "# can't collide with anything the game itself does. Optionally add\n"
-        "# :milliseconds to require holding it that long, e.g. back+start:1000\n"
-        "# for a 1-second hold of Back+Start together. Set either hotkey= or\n"
-        "# button= (not both) to \"none\" to disable just that one and rely only\n"
-        "# on the other. Currently: %s\n"
+        "# can't collide with anything the game itself does.\n"
+        "#\n"
+        "# On an Xbox controller, \"guide\" (the Xbox-logo button) works the same\n"
+        "# way, and is actually the default for a fresh Xbox setup, same as PS is\n"
+        "# for PlayStation -- confirmed working, including through the official\n"
+        "# Wireless Adapter dongle. Using it makes this software flip a Windows\n"
+        "# setting for the session (Settings > Gaming > Xbox Game Bar > \"Open\n"
+        "# Xbox Game Bar using this button on a controller\"), put back exactly as\n"
+        "# found when this closes. If Steam is running, its own \"Guide Button\n"
+        "# Focuses Steam\" setting (Steam > Settings > Controller) is a SEPARATE\n"
+        "# thing this software can't touch -- turn that off too if the guide\n"
+        "# button still opens Steam instead of toggling modes.\n"
+        "#\n"
+        "# Optionally add :milliseconds to require holding it that long, e.g.\n"
+        "# back+start:1000 for a 1-second hold of Back+Start together. Set either\n"
+        "# hotkey= or button= (not both) to \"none\" to disable just that one and\n"
+        "# rely only on the other. Currently: %s\n"
         "button=",
         hk, hotkey_value, btn);
     if (button_mask == 0) {
@@ -1965,6 +2074,11 @@ static HMODULE load_xinput(void) {
        g_vigem_available. */
     pXInputSetState = (XInputSetState_t)GetProcAddress(h, "XInputSetState");
     pXInputGetBatteryInformation = (XInputGetBatteryInformation_t)GetProcAddress(h, "XInputGetBatteryInformation");
+    /* Ordinal-only, no name -- see XInputGetStateEx_t's own comment.
+       NULL here is expected and fine on some xinput dll builds; every
+       caller already treats a NULL pXInputGetStateEx as "no Guide-button
+       support this session," never a fatal condition. */
+    pXInputGetStateEx = (XInputGetStateEx_t)GetProcAddress(h, MAKEINTRESOURCEA(100));
     return h;
 }
 
@@ -4150,11 +4264,14 @@ static void run_remap_flow(backend_t backend, int userIndex) {
    time this same frame). */
 static DWORD read_any_physical_input(backend_t backend, int userIndex) {
     XINPUT_GAMEPAD gp;
-    int ps_pressed = 0, touchpad_pressed = 0;
+    int ps_pressed = 0, touchpad_pressed = 0, guide_pressed = 0;
     if (backend == BACKEND_XINPUT) {
         XINPUT_STATE st;
-        if (pXInputGetState((DWORD)userIndex, &st) != ERROR_SUCCESS) return 0;
+        int used_ex = (g_gamebar_guide_disabled && pXInputGetStateEx); /* see the main loop's identical check */
+        DWORD xr = used_ex ? pXInputGetStateEx((DWORD)userIndex, &st) : pXInputGetState((DWORD)userIndex, &st);
+        if (xr != ERROR_SUCCESS) return 0;
         gp = st.Gamepad;
+        guide_pressed = used_ex && (st.Gamepad.wButtons & XINPUT_GAMEPAD_GUIDE) != 0;
     } else if (backend == BACKEND_DS4_RAWHID) {
         if (!poll_ds4_raw_hid(&gp)) return 0;
         ps_pressed = g_ps_pressed;
@@ -4183,6 +4300,7 @@ static DWORD read_any_physical_input(backend_t backend, int userIndex) {
     if (gp.bRightTrigger > TRIGGER_CLICK_THRESHOLD) mask |= PHYS_TRIGGER_R;
     if (ps_pressed) mask |= PHYS_PS_BUTTON;
     if (touchpad_pressed) mask |= PHYS_TOUCHPAD;
+    if (guide_pressed) mask |= PHYS_GUIDE_BUTTON;
     return mask;
 }
 
@@ -4466,6 +4584,7 @@ static BOOL WINAPI console_ctrl_handler(DWORD ctrl_type) {
     (void)ctrl_type;
     relinquish_vjoy_if_acquired();
     run_hidhide("--cloak-off");
+    restore_gamebar_guide_capture(); /* undo whatever this session changed, same as the cloak-off right above */
     vigem_teardown(); /* don't leave an orphaned virtual controller behind on an abrupt close */
     /* vJoy's device is session-scoped by design (2026-09-07) -- created
        fresh on every launch, fully removed here on every exit, so nothing
@@ -4497,6 +4616,7 @@ static void fatal_exit(const char *message) {
        necessarily set up at all. */
     relinquish_vjoy_if_acquired();
     run_hidhide("--cloak-off");
+    restore_gamebar_guide_capture();
     vigem_teardown();
     destroy_vjoy_root_devices();
 
@@ -6055,6 +6175,8 @@ int main(int argc, char **argv) {
               "\"touchpad\" parses to PHYS_TOUCHPAD");
         CHECK(parse_button_line("ps+touchpad", &mask, &hold_ms) == 1 &&
               mask == (PHYS_PS_BUTTON | PHYS_TOUCHPAD), "\"ps+touchpad\" combo parses");
+        CHECK(parse_button_line("guide", &mask, &hold_ms) == 1 && mask == PHYS_GUIDE_BUTTON,
+              "\"guide\" parses to PHYS_GUIDE_BUTTON");
 
         printf("== format_hotkey / format_button_combo ==\n");
         char buf[48];
@@ -6062,6 +6184,8 @@ int main(int argc, char **argv) {
         CHECK(!strcmp(buf, "None"), "format_hotkey shows None for vk=0");
         format_button_combo(buf, sizeof(buf), PHYS_PS_BUTTON, 0);
         CHECK(!strcmp(buf, "Ps"), "format_button_combo shows Ps for PHYS_PS_BUTTON");
+        format_button_combo(buf, sizeof(buf), PHYS_GUIDE_BUTTON, 0);
+        CHECK(!strcmp(buf, "Guide"), "format_button_combo shows Guide for PHYS_GUIDE_BUTTON");
         format_button_combo(buf, sizeof(buf), 0, 0);
         CHECK(!strcmp(buf, "None"), "format_button_combo shows None for mask=0");
 
@@ -6350,12 +6474,12 @@ int main(int argc, char **argv) {
 
         /* Smart first-run default, only ever decided once (see
            g_toggle_button_is_fresh_default's own comment): a genuinely
-           fresh install's first-ever connected controller decides whether
-           the default toggle combo should be the PS button instead of
-           Back+Start. Only upgrades for an actual PlayStation controller
-           -- an Xbox/HOTAS-only first connect leaves Back+Start exactly
-           as it already was, since Xbox has no equivalent button this
-           software can even see. */
+           fresh install's first-ever connected controller decides the
+           default toggle -- the PS button for a PlayStation controller,
+           the Guide button for an Xbox one (confirmed working on real
+           hardware, incl. via the official Wireless Adapter dongle,
+           2026-09-09) -- instead of Back+Start. Back+Start is only ever
+           the actual default now for a HOTAS-only device with neither. */
         if (g_toggle_button_is_fresh_default) {
             g_toggle_button_is_fresh_default = 0; /* decide this at most once, ever */
             int is_ps_controller =
@@ -6367,7 +6491,24 @@ int main(int argc, char **argv) {
             if (is_ps_controller) {
                 g_toggle_button_mask = PHYS_PS_BUTTON;
                 save_config(g_hotkey_mods, g_hotkey_vk, g_toggle_button_mask, g_toggle_hold_ms, g_game_path);
+            } else if (backend == BACKEND_XINPUT && pXInputGetStateEx) {
+                g_toggle_button_mask = PHYS_GUIDE_BUTTON;
+                save_config(g_hotkey_mods, g_hotkey_vk, g_toggle_button_mask, g_toggle_hold_ms, g_game_path);
             }
+        }
+
+        /* Guide-button capability itself (as opposed to which combo is
+           CONFIGURED as the toggle above) is enabled any time an Xbox
+           controller connects and the undocumented API is available --
+           same unconditional treatment as g_ps_pressed for PlayStation
+           controllers, now that this is confirmed working on real
+           hardware rather than a hedge against an unverified idea. Real,
+           visible side effect worth knowing (documented in the ini and
+           README): this flips a Windows setting (Game Bar's guide-button
+           capture) for the session, restored to exactly what it was on
+           every exit path -- see disable_gamebar_guide_capture(). */
+        if (backend == BACKEND_XINPUT && pXInputGetStateEx) {
+            disable_gamebar_guide_capture();
         }
 
         /* REAL BUG found and fixed 2026-09-08, on real hardware: registering
@@ -6444,13 +6585,30 @@ int main(int argc, char **argv) {
         int connected = 1;
         while (connected) {
             XINPUT_GAMEPAD gp;
+            g_guide_pressed = 0; /* only the BACKEND_XINPUT branch below ever sets this to something else --
+                                     reset unconditionally every iteration so a stale press from a previous
+                                     Xbox connection can't linger once a different controller takes over */
             if (backend == BACKEND_XINPUT) {
                 XINPUT_STATE st;
-                if (pXInputGetState((DWORD)userIndex, &st) != ERROR_SUCCESS) {
+                /* Only reach for the undocumented Ex variant once the Game
+                   Bar registry toggle is actually confirmed off THIS
+                   session (see disable_gamebar_guide_capture()) -- calling
+                   it before that wouldn't usefully set the Guide bit
+                   anyway (per real-world confirmation from another
+                   project's maintainer), so there's no reason to prefer
+                   the undocumented call over the always-proven plain one
+                   until it can actually tell us something extra. Same
+                   XINPUT_STATE shape either way, so gp = st.Gamepad below
+                   is identical regardless of which one filled it in. */
+                int used_ex = (g_gamebar_guide_disabled && pXInputGetStateEx);
+                DWORD xr = used_ex ? pXInputGetStateEx((DWORD)userIndex, &st)
+                                    : pXInputGetState((DWORD)userIndex, &st);
+                if (xr != ERROR_SUCCESS) {
                     connected = 0; /* dropped -- relinquish below and go back to waiting */
                     break;
                 }
                 gp = st.Gamepad;
+                g_guide_pressed = used_ex && (st.Gamepad.wButtons & XINPUT_GAMEPAD_GUIDE) != 0;
                 g_ps_pressed = 0;      /* no such button in XInput's bitmask */
                 g_touchpad_pressed = 0;
             } else if (backend == BACKEND_DS4_RAWHID) {
@@ -6602,21 +6760,24 @@ int main(int argc, char **argv) {
                     pSetAxis(vjoy_muted ? i16_to_axis(0) : i16_to_axis(gp.sThumbRX), rid, HID_USAGE_RX);
                     pSetAxis(vjoy_muted ? i16_to_axis(0) : i16_to_axis(nry), rid, HID_USAGE_RY);
 
-                    /* Whenever the PS button or touchpad is (part of) the
-                       configured toggle combo, a press of it is consumed
-                       for that purpose and deliberately never ALSO forwarded
-                       as a normal vJoy button -- otherwise pressing it to
-                       switch modes would simultaneously fire whatever vJoy
-                       button it happens to be mapped to (PS is button 17 by
-                       default), a confusing double-duty press. Scoped to
-                       just these two: A/B/X/Y/etc. staying part of both the
-                       toggle AND their own vJoy button (e.g. the Back+Start
-                       default) is long-standing, unchanged behavior -- only
-                       PS/touchpad get this treatment, since they're the ones
-                       explicitly meant to double as an game-invisible toggle
-                       (see the button= ini comment in save_config()). */
+                    /* Whenever the PS button, touchpad, or Guide button is
+                       (part of) the configured toggle combo, a press of it
+                       is consumed for that purpose and deliberately never
+                       ALSO forwarded as a normal vJoy button -- otherwise
+                       pressing it to switch modes would simultaneously
+                       fire whatever vJoy button it happens to be mapped to
+                       (PS is button 17 by default), a confusing double-
+                       duty press. Scoped to just these three: A/B/X/Y/etc.
+                       staying part of both the toggle AND their own vJoy
+                       button (e.g. the Back+Start default) is long-
+                       standing, unchanged behavior -- only PS/touchpad/
+                       Guide get this treatment, since they're the ones
+                       explicitly meant to double as a game-invisible
+                       toggle (see the button= ini comment in
+                       save_config()). */
                     int ps_is_toggle = (g_toggle_button_mask & PHYS_PS_BUTTON) != 0;
                     int touchpad_is_toggle = (g_toggle_button_mask & PHYS_TOUCHPAD) != 0;
+                    int guide_is_toggle = (g_toggle_button_mask & PHYS_GUIDE_BUTTON) != 0;
 
                     /* Every vJoy button 1-NUM_VJOY_BUTTONS is driven by
                        whichever physical input g_button_map says --
@@ -6630,6 +6791,7 @@ int main(int argc, char **argv) {
                                       : phys == PHYS_TRIGGER_R ? gp.bRightTrigger > TRIGGER_CLICK_THRESHOLD
                                       : phys == PHYS_PS_BUTTON  ? (ps_is_toggle ? 0 : g_ps_pressed)
                                       : phys == PHYS_TOUCHPAD   ? (touchpad_is_toggle ? 0 : g_touchpad_pressed)
+                                      : phys == PHYS_GUIDE_BUTTON ? (guide_is_toggle ? 0 : g_guide_pressed)
                                                                 : (gp.wButtons & phys) != 0;
                         pSetBtn(pressed, rid, (UCHAR)(b + 1));
                     }
@@ -6646,20 +6808,23 @@ int main(int argc, char **argv) {
                    hide/unhide toggle as the keyboard hotkey -- fires once
                    per press (or once per completed hold, for a combo with a
                    hold requirement), not repeatedly while held. Checked
-                   against the same combined wButtons+trigger+PS+touchpad
-                   mask read_any_physical_input() builds (recomputed here
-                   from this frame's already-polled gp/g_ps_pressed/
-                   g_touchpad_pressed, not by calling that function again --
-                   it does its own device poll, which this frame already
-                   did once above) -- not just gp.wButtons alone, now that
-                   the toggle combo can include the PS button or touchpad
-                   (see NAMED_PHYS/parse_button_line above). Runs regardless
-                   of HOTAS/Normal mode -- the toggle has to work in both. */
+                   against the same combined wButtons+trigger+PS+touchpad+
+                   Guide mask read_any_physical_input() builds (recomputed
+                   here from this frame's already-polled gp/g_ps_pressed/
+                   g_touchpad_pressed/g_guide_pressed, not by calling that
+                   function again -- it does its own device poll, which
+                   this frame already did once above) -- not just
+                   gp.wButtons alone, now that the toggle combo can include
+                   the PS button, touchpad, or (opt-in only) Xbox's Guide
+                   button (see NAMED_PHYS/parse_button_line above). Runs
+                   regardless of HOTAS/Normal mode -- the toggle has to
+                   work in both. */
                 DWORD live_phys_mask = gp.wButtons;
                 if (gp.bLeftTrigger > TRIGGER_CLICK_THRESHOLD) live_phys_mask |= PHYS_TRIGGER_L;
                 if (gp.bRightTrigger > TRIGGER_CLICK_THRESHOLD) live_phys_mask |= PHYS_TRIGGER_R;
                 if (g_ps_pressed) live_phys_mask |= PHYS_PS_BUTTON;
                 if (g_touchpad_pressed) live_phys_mask |= PHYS_TOUCHPAD;
+                if (g_guide_pressed) live_phys_mask |= PHYS_GUIDE_BUTTON;
                 int combo_now =
                     g_toggle_button_mask != 0 && (live_phys_mask & g_toggle_button_mask) == g_toggle_button_mask;
                 if (combo_now && !combo_was) {
@@ -6781,6 +6946,8 @@ int main(int argc, char **argv) {
         }
         vigem_teardown();
         relinquish_vjoy_if_acquired();
+        restore_gamebar_guide_capture(); /* self-guarded/idempotent, safe to call even if this disconnect
+                                              wasn't an Xbox controller or nothing was ever touched */
         backend = BACKEND_XINPUT; /* re-try XInput first on the next pass */
         /* Loop back to the top: render_waiting_screen will now show the
            "reconnect" wording since was_ever_connected is set. */

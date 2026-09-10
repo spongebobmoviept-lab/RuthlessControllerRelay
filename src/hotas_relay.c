@@ -95,6 +95,22 @@
 #define TOGGLE_HOTKEY_ID 1
 #define HOTKEY_CONFIG_FILE "ruthless_controller_relay.ini"
 
+/* Named in one place instead of retyped at each of the many sites that
+   need them (previously plain 0x054C/0x0CE6 literals and a lowercase
+   "vid_054c" string match repeated across ~11 call sites). */
+#define SONY_VID 0x054C
+#define DUALSENSE_PID 0x0CE6
+#define SONY_VID_PATH_SUBSTRING "vid_054c" /* lowercase, matches DevicePath's own casing */
+/* The Bluetooth Base UUID's fixed suffix -- present in every Bluetooth
+   HID device interface path, nowhere in a wired one, so a plain substring
+   check reliably tells the two apart without needing to parse the GUID
+   itself. Was three separately-typed copies of this same literal. */
+#define BT_HID_GUID_SUBSTRING "00805f9b34fb"
+/* Every raw HID report buffer in this file is sized to this -- comfortably
+   larger than any real Sony/Microsoft controller report, wired or
+   Bluetooth. Was a dozen-plus independently-typed "1024" literals. */
+#define HID_REPORT_BUF_SIZE 1024
+
 /* Set by load_config() in main() before toggle_thread starts. NOT actually
    read-only after that (stale claim, corrected 2026-09-08 pre-ship audit):
    run_remap_flow() (press R, runs on the main thread) writes fresh values
@@ -498,30 +514,11 @@ static const DWORD DEFAULT_BUTTON_MAP[NUM_VJOY_BUTTONS] = {
    is actually connected -- PlayStation face buttons/shoulders/Back-Start
    are named differently from Xbox's even though they sit in the same
    physical positions (and the same g_button_map bit values). */
-static const char *label_for_phys(DWORD phys, backend_t backend) {
-    int ps = (backend == BACKEND_DINPUT || backend == BACKEND_DS4_RAWHID || backend == BACKEND_DUALSENSE_RAWHID ||
-               backend == BACKEND_DS4_WIRED_RAWHID || backend == BACKEND_DUALSENSE_WIRED_RAWHID);
-    if (phys == XINPUT_GAMEPAD_A) return ps ? "Cross" : "A";
-    if (phys == XINPUT_GAMEPAD_B) return ps ? "Circle" : "B";
-    if (phys == XINPUT_GAMEPAD_X) return ps ? "Square" : "X";
-    if (phys == XINPUT_GAMEPAD_Y) return ps ? "Triangle" : "Y";
-    if (phys == XINPUT_GAMEPAD_LEFT_SHOULDER) return ps ? "L1" : "LB";
-    if (phys == XINPUT_GAMEPAD_RIGHT_SHOULDER) return ps ? "R1" : "RB";
-    if (phys == XINPUT_GAMEPAD_BACK) return ps ? "Share" : "Back";
-    if (phys == XINPUT_GAMEPAD_START) return ps ? "Options" : "Start";
-    if (phys == XINPUT_GAMEPAD_LEFT_THUMB) return "L3";
-    if (phys == XINPUT_GAMEPAD_RIGHT_THUMB) return "R3";
-    if (phys == XINPUT_GAMEPAD_DPAD_UP) return "D-Up";
-    if (phys == XINPUT_GAMEPAD_DPAD_DOWN) return "D-Down";
-    if (phys == XINPUT_GAMEPAD_DPAD_LEFT) return "D-Left";
-    if (phys == XINPUT_GAMEPAD_DPAD_RIGHT) return "D-Right";
-    if (phys == PHYS_TRIGGER_L) return ps ? "L2 click" : "LT click";
-    if (phys == PHYS_TRIGGER_R) return ps ? "R2 click" : "RT click";
-    if (phys == PHYS_PS_BUTTON) return "PS";       /* DS4/DS5 only -- XInput has no Guide-button bit */
-    if (phys == PHYS_TOUCHPAD) return "Touchpad";  /* DS4/DS5 only */
-    if (phys == PHYS_GUIDE_BUTTON) return "Guide"; /* Xbox only -- see XInputGetStateEx_t's comment */
-    return "?";
-}
+/* Forward reference -- PHYS_TABLE is defined further below (it also needs
+   NamedPhys's sibling fields), but label_for_phys() is used well before
+   that point in the file. See PHYS_TABLE's own comment for why this used
+   to be a separate if-chain here instead of sharing that table. */
+static const char *label_for_phys(DWORD phys, backend_t backend);
 
 /* Reverse lookup into g_button_map so the live dashboard can show what
    vJoy button any given physical input drives right now -- every phys
@@ -1008,33 +1005,50 @@ static void format_hotkey(char *buf, size_t len, UINT mods, UINT vk) {
    combined mask read_any_physical_input() does (see the main loop), a
    toggle combo can validly include any of these, so the separate table
    was removed rather than kept in sync with two parsers by hand. */
-typedef struct { const char *name; DWORD phys; } NamedPhys;
-static const NamedPhys NAMED_PHYS[] = {
-    {"a", XINPUT_GAMEPAD_A},
-    {"b", XINPUT_GAMEPAD_B},
-    {"x", XINPUT_GAMEPAD_X},
-    {"y", XINPUT_GAMEPAD_Y},
-    {"lb", XINPUT_GAMEPAD_LEFT_SHOULDER},
-    {"rb", XINPUT_GAMEPAD_RIGHT_SHOULDER},
-    {"back", XINPUT_GAMEPAD_BACK},
-    {"start", XINPUT_GAMEPAD_START},
-    {"l3", XINPUT_GAMEPAD_LEFT_THUMB},
-    {"r3", XINPUT_GAMEPAD_RIGHT_THUMB},
-    {"dpad_up", XINPUT_GAMEPAD_DPAD_UP},
-    {"dpad_down", XINPUT_GAMEPAD_DPAD_DOWN},
-    {"dpad_left", XINPUT_GAMEPAD_DPAD_LEFT},
-    {"dpad_right", XINPUT_GAMEPAD_DPAD_RIGHT},
-    {"lt", PHYS_TRIGGER_L},
-    {"rt", PHYS_TRIGGER_R},
-    {"ps", PHYS_PS_BUTTON},
-    {"touchpad", PHYS_TOUCHPAD},
-    {"guide", PHYS_GUIDE_BUTTON},
+/* Single source of truth for every physical input this project knows
+   about -- previously the same 18-19 inputs were independently listed in
+   four places (this table's old name-only form, a separate if-chain
+   inside label_for_phys() with its own Xbox/PlayStation display-label
+   text, and two now-removed WORD-only tables from before the PS/Guide-
+   button-as-toggle feature). Adding a new physical input now means one
+   new row here, not hunting down every place that needs to know its
+   name/label. label_ps and label_xbox are identical for inputs whose
+   on-screen name doesn't depend on controller type (L3/R3/D-pad/PS/
+   Touchpad/Guide) -- kept as two fields rather than one shared "label"
+   plus a few special cases, so every row has the same shape. */
+typedef struct {
+    const char *ini_name;   /* used in the config file and --test-config, e.g. "a", "ps", "guide" */
+    DWORD phys;
+    const char *label_xbox; /* dashboard text on an Xbox-identified controller */
+    const char *label_ps;   /* dashboard text on a PlayStation-identified controller */
+} PhysEntry;
+static const PhysEntry PHYS_TABLE[] = {
+    {"a", XINPUT_GAMEPAD_A, "A", "Cross"},
+    {"b", XINPUT_GAMEPAD_B, "B", "Circle"},
+    {"x", XINPUT_GAMEPAD_X, "X", "Square"},
+    {"y", XINPUT_GAMEPAD_Y, "Y", "Triangle"},
+    {"lb", XINPUT_GAMEPAD_LEFT_SHOULDER, "LB", "L1"},
+    {"rb", XINPUT_GAMEPAD_RIGHT_SHOULDER, "RB", "R1"},
+    {"back", XINPUT_GAMEPAD_BACK, "Back", "Share"},
+    {"start", XINPUT_GAMEPAD_START, "Start", "Options"},
+    {"l3", XINPUT_GAMEPAD_LEFT_THUMB, "L3", "L3"},
+    {"r3", XINPUT_GAMEPAD_RIGHT_THUMB, "R3", "R3"},
+    {"dpad_up", XINPUT_GAMEPAD_DPAD_UP, "D-Up", "D-Up"},
+    {"dpad_down", XINPUT_GAMEPAD_DPAD_DOWN, "D-Down", "D-Down"},
+    {"dpad_left", XINPUT_GAMEPAD_DPAD_LEFT, "D-Left", "D-Left"},
+    {"dpad_right", XINPUT_GAMEPAD_DPAD_RIGHT, "D-Right", "D-Right"},
+    {"lt", PHYS_TRIGGER_L, "LT click", "L2 click"},
+    {"rt", PHYS_TRIGGER_R, "RT click", "R2 click"},
+    {"ps", PHYS_PS_BUTTON, "PS", "PS"},             /* DS4/DS5 only -- XInput has no Guide-button bit */
+    {"touchpad", PHYS_TOUCHPAD, "Touchpad", "Touchpad"}, /* DS4/DS5 only */
+    {"guide", PHYS_GUIDE_BUTTON, "Guide", "Guide"},  /* Xbox only -- see XInputGetStateEx_t's comment */
 };
+#define PHYS_TABLE_COUNT (sizeof(PHYS_TABLE) / sizeof(PHYS_TABLE[0]))
 
 static int parse_phys_name(const char *name, DWORD *out) {
-    for (size_t i = 0; i < sizeof(NAMED_PHYS) / sizeof(NAMED_PHYS[0]); i++) {
-        if (!strcmp(name, NAMED_PHYS[i].name)) {
-            *out = NAMED_PHYS[i].phys;
+    for (size_t i = 0; i < PHYS_TABLE_COUNT; i++) {
+        if (!strcmp(name, PHYS_TABLE[i].ini_name)) {
+            *out = PHYS_TABLE[i].phys;
             return 1;
         }
     }
@@ -1042,10 +1056,19 @@ static int parse_phys_name(const char *name, DWORD *out) {
 }
 
 static const char *ini_name_for_phys(DWORD phys) {
-    for (size_t i = 0; i < sizeof(NAMED_PHYS) / sizeof(NAMED_PHYS[0]); i++) {
-        if (NAMED_PHYS[i].phys == phys) return NAMED_PHYS[i].name;
+    for (size_t i = 0; i < PHYS_TABLE_COUNT; i++) {
+        if (PHYS_TABLE[i].phys == phys) return PHYS_TABLE[i].ini_name;
     }
-    return "a"; /* unreachable in practice -- g_button_map only ever holds NAMED_PHYS values */
+    return "a"; /* unreachable in practice -- g_button_map only ever holds PHYS_TABLE values */
+}
+
+static const char *label_for_phys(DWORD phys, backend_t backend) {
+    int ps = (backend == BACKEND_DINPUT || backend == BACKEND_DS4_RAWHID || backend == BACKEND_DUALSENSE_RAWHID ||
+               backend == BACKEND_DS4_WIRED_RAWHID || backend == BACKEND_DUALSENSE_WIRED_RAWHID);
+    for (size_t i = 0; i < PHYS_TABLE_COUNT; i++) {
+        if (PHYS_TABLE[i].phys == phys) return ps ? PHYS_TABLE[i].label_ps : PHYS_TABLE[i].label_xbox;
+    }
+    return "?";
 }
 
 /* Parses "back+start:1000"-style text: one or two button names (joined by
@@ -1109,12 +1132,12 @@ static void format_button_combo(char *buf, size_t len, DWORD mask, DWORD hold_ms
         return;
     }
     int first = 1;
-    for (size_t i = 0; i < sizeof(NAMED_PHYS) / sizeof(NAMED_PHYS[0]); i++) {
-        if (mask & NAMED_PHYS[i].phys) {
+    for (size_t i = 0; i < PHYS_TABLE_COUNT; i++) {
+        if (mask & PHYS_TABLE[i].phys) {
             if (!first) strncat(buf, "+", len - strlen(buf) - 1);
             char up[16];
-            snprintf(up, sizeof(up), "%c%s", (char)toupper((unsigned char)NAMED_PHYS[i].name[0]),
-                     NAMED_PHYS[i].name + 1);
+            snprintf(up, sizeof(up), "%c%s", (char)toupper((unsigned char)PHYS_TABLE[i].ini_name[0]),
+                     PHYS_TABLE[i].ini_name + 1);
             strncat(buf, up, len - strlen(buf) - 1);
             first = 0;
         }
@@ -1380,8 +1403,8 @@ static void save_config(UINT mods, UINT vk, DWORD button_mask, DWORD hold_ms, co
         fprintf(out, "none");
     } else {
         long before_names = ftell(out);
-        for (size_t i = 0; i < sizeof(NAMED_PHYS) / sizeof(NAMED_PHYS[0]); i++) {
-            if (button_mask & NAMED_PHYS[i].phys) fprintf(out, "%s+", NAMED_PHYS[i].name);
+        for (size_t i = 0; i < PHYS_TABLE_COUNT; i++) {
+            if (button_mask & PHYS_TABLE[i].phys) fprintf(out, "%s+", PHYS_TABLE[i].ini_name);
         }
         if (ftell(out) > before_names) fseek(out, -1, SEEK_CUR); /* trim the trailing + -- only if something was
                                                                       actually written to trim */
@@ -1782,9 +1805,9 @@ static const char *describe_controller(backend_t backend) {
     if (backend == BACKEND_DUALSENSE_WIRED_RAWHID) return "PlayStation 5 controller (DualSense), wired, raw HID";
     WORD vid = (WORD)(g_dinput_vid_pid & 0xFFFFu);
     WORD pid = (WORD)((g_dinput_vid_pid >> 16) & 0xFFFFu);
-    if (vid == 0x054C) { /* Sony */
+    if (vid == SONY_VID) { /* Sony */
         if (pid == 0x05C4 || pid == 0x09CC) return "PlayStation 4 controller (DualShock 4)";
-        if (pid == 0x0CE6) return "PlayStation 5 controller (DualSense)";
+        if (pid == DUALSENSE_PID) return "PlayStation 5 controller (DualSense)";
         return "PlayStation controller (Sony, unrecognized model)";
     }
     return "PlayStation-style controller (generic DirectInput)";
@@ -1840,7 +1863,7 @@ static void print_dual_badge(void) {
     } else { /* BACKEND_DINPUT -- a real wired PS controller via the DirectInput fallback, or a genuine
                 HOTAS/generic joystick; only the former has a real PS/Xbox identity to show */
         WORD vid = (WORD)(g_dinput_vid_pid & 0xFFFFu);
-        if (vid == 0x054C) leftIsPs = 1;
+        if (vid == SONY_VID) leftIsPs = 1;
         else leftIsNeutral = 1;
     }
     int rightIsPs = g_vigem_emulate_ds4;
@@ -2588,28 +2611,68 @@ static int is_ds4_product_id(USHORT pid) {
    so it can't be reused here to tell transports apart. This one requires
    the Bluetooth HID service UUID in the device path, same substring check
    setup_dualsense_raw_hid() already uses for the same purpose. */
-static int is_ds4_present_over_bt_once(void) {
+/* Shared by several of this file's HID-enumeration sites (previously each
+   independently retyped the same SetupDiGetClassDevsA/
+   SetupDiEnumDeviceInterfaces/SetupDiGetDeviceInterfaceDetailA walk over
+   every present HID device interface). Calls cb(path, userdata) with
+   each candidate's DevicePath; stops as soon as cb returns nonzero
+   (meaning "this is the one, stop looking"), and returns 1 in that case,
+   0 if the whole walk finished without a match, or -1 if enumeration
+   itself couldn't even start. A callback that needs to inspect every
+   candidate before deciding (e.g. "pick whichever has the largest report
+   length") should track its own best-so-far in userdata and simply
+   always return 0, checking that tracked state itself once the walk
+   returns instead of relying on this return value.
+
+   Deliberately scoped to ONLY the sites where a single caller's keep/
+   reject policy maps cleanly onto this single-callback shape without
+   restructuring their own hardware-specific logic (is_ds4_present_over_bt_once(),
+   test_dualsense_keepalive(), capture_dualsense_raw()) -- see issue #7 for
+   the fuller set this could eventually cover. setup_ds4_raw_hid(),
+   setup_dualsense_raw_hid(), setup_ps_wired_raw_hid() (the actual
+   production controller-connection paths, each carrying real, hard-won,
+   hardware-specific fixes found only through extensive real-device
+   testing) and capture_gamesir_raw() (which scans every candidate rather
+   than stopping at the first) are deliberately NOT migrated here --
+   verifying they still behave identically across every controller/
+   transport combination needs real multi-controller hardware regression
+   testing this session didn't have the ability to do, and getting one of
+   these three wrong breaks real users' controller connections, not just
+   a diagnostic tool. */
+typedef int (*HidEnumCallback)(const char *devicePath, void *userdata);
+static int walk_hid_devices(HidEnumCallback cb, void *userdata) {
     GUID hidGuid;
     HidD_GetHidGuid(&hidGuid);
     HDEVINFO devInfo = SetupDiGetClassDevsA(&hidGuid, NULL, NULL, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
-    if (devInfo == INVALID_HANDLE_VALUE) return 0;
-    int found = 0;
+    if (devInfo == INVALID_HANDLE_VALUE) return -1;
+
+    int matched = 0;
     SP_DEVICE_INTERFACE_DATA ifData = {.cbSize = sizeof(ifData)};
-    for (DWORD i = 0; !found && SetupDiEnumDeviceInterfaces(devInfo, NULL, &hidGuid, i, &ifData); i++) {
+    for (DWORD i = 0; SetupDiEnumDeviceInterfaces(devInfo, NULL, &hidGuid, i, &ifData); i++) {
         union { SP_DEVICE_INTERFACE_DETAIL_DATA_A data; char buf[512]; } detail;
         detail.data.cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_A);
         if (!SetupDiGetDeviceInterfaceDetailA(devInfo, &ifData, &detail.data, sizeof(detail), NULL, NULL)) continue;
-        if (!strstr(detail.data.DevicePath, "vid_054c")) continue;
-        if (!strstr(detail.data.DevicePath, "00805f9b34fb")) continue; /* Bluetooth only */
-        HANDLE h = CreateFileA(detail.data.DevicePath, GENERIC_READ | GENERIC_WRITE,
-                                 FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
-        if (h == INVALID_HANDLE_VALUE) continue;
-        HIDD_ATTRIBUTES attrs = {.Size = sizeof(attrs)};
-        if (HidD_GetAttributes(h, &attrs) && attrs.VendorID == 0x054C && is_ds4_product_id(attrs.ProductID)) found = 1;
-        CloseHandle(h);
+        if (cb(detail.data.DevicePath, userdata)) { matched = 1; break; }
     }
     SetupDiDestroyDeviceInfoList(devInfo);
+    return matched;
+}
+
+static int is_ds4_present_over_bt_cb(const char *devicePath, void *userdata) {
+    (void)userdata;
+    if (!strstr(devicePath, SONY_VID_PATH_SUBSTRING)) return 0;
+    if (!strstr(devicePath, BT_HID_GUID_SUBSTRING)) return 0; /* Bluetooth only */
+    HANDLE h = CreateFileA(devicePath, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                             OPEN_EXISTING, 0, NULL);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    HIDD_ATTRIBUTES attrs = {.Size = sizeof(attrs)};
+    int found = HidD_GetAttributes(h, &attrs) && attrs.VendorID == SONY_VID && is_ds4_product_id(attrs.ProductID);
+    CloseHandle(h);
     return found;
+}
+
+static int is_ds4_present_over_bt_once(void) {
+    return walk_hid_devices(is_ds4_present_over_bt_cb, NULL) > 0;
 }
 
 /* REAL BUG found on real hardware 2026-09-08, via a direct log comparison:
@@ -2662,14 +2725,14 @@ static int setup_ds4_raw_hid(void) {
            opening. Device interface paths always carry "vid_xxxx&pid_xxxx"
            verbatim, so this skips straight past anything that can't
            possibly be Sony hardware without ever touching it. */
-        if (!strstr(detail.data.DevicePath, "vid_054c")) continue;
+        if (!strstr(detail.data.DevicePath, SONY_VID_PATH_SUBSTRING)) continue;
 
         HANDLE h = CreateFileA(detail.data.DevicePath, GENERIC_READ | GENERIC_WRITE,
                                 FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
         if (h == INVALID_HANDLE_VALUE) continue;
 
         HIDD_ATTRIBUTES attrs = {.Size = sizeof(attrs)};
-        if (HidD_GetAttributes(h, &attrs) && attrs.VendorID == 0x054C && is_ds4_product_id(attrs.ProductID)) { /* Sony, and specifically a DS4 */
+        if (HidD_GetAttributes(h, &attrs) && attrs.VendorID == SONY_VID && is_ds4_product_id(attrs.ProductID)) { /* Sony, and specifically a DS4 */
             BYTE feature[64] = {0x05}; /* report ID 0x05 -- ReportFeatureInCalibrateBT */
             BOOL featureOk = HidD_GetFeature(h, feature, sizeof(feature)); /* result checked indirectly via the report length below */
 
@@ -2733,40 +2796,34 @@ static int setup_ds4_raw_hid(void) {
    confirmed on real hardware that DualSense doesn't recognize it and
    that sending it can destabilize the connection) -- InputReportByteLength
    already comes back as a real, full value without needing one. */
+typedef struct { HANDLE h; char path[512]; } DualSenseFindResult;
+
+/* Unlike find_dualsense_bt_cb() above, matches a DualSense over EITHER
+   transport (wired or Bluetooth) -- this diagnostic tool is meant to
+   capture from whichever one is actually connected right now. */
+static int find_any_dualsense_cb(const char *devicePath, void *userdata) {
+    DualSenseFindResult *out = (DualSenseFindResult *)userdata;
+    HANDLE cand = CreateFileA(devicePath, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                                OPEN_EXISTING, 0, NULL);
+    if (cand == INVALID_HANDLE_VALUE) return 0;
+    HIDD_ATTRIBUTES attrs = {.Size = sizeof(attrs)};
+    if (HidD_GetAttributes(cand, &attrs) && attrs.VendorID == SONY_VID && attrs.ProductID == DUALSENSE_PID) {
+        out->h = cand;
+        strncpy(out->path, devicePath, sizeof(out->path) - 1);
+        return 1;
+    }
+    CloseHandle(cand);
+    return 0;
+}
+
 static int capture_dualsense_raw(void) {
-    GUID hidGuid;
-    HidD_GetHidGuid(&hidGuid);
-    HDEVINFO devInfo = SetupDiGetClassDevsA(&hidGuid, NULL, NULL, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
-    if (devInfo == INVALID_HANDLE_VALUE) {
+    DualSenseFindResult result = {.h = INVALID_HANDLE_VALUE};
+    if (walk_hid_devices(find_any_dualsense_cb, &result) < 0) {
         printf("SetupDiGetClassDevsA failed.\n");
         return 0;
     }
-
-    HANDLE h = INVALID_HANDLE_VALUE;
-    char foundPath[512] = {0};
-    SP_DEVICE_INTERFACE_DATA ifData = {.cbSize = sizeof(ifData)};
-    for (DWORD i = 0; h == INVALID_HANDLE_VALUE && SetupDiEnumDeviceInterfaces(devInfo, NULL, &hidGuid, i, &ifData);
-          i++) {
-        union {
-            SP_DEVICE_INTERFACE_DETAIL_DATA_A data;
-            char buf[512];
-        } detail;
-        detail.data.cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_A);
-        if (!SetupDiGetDeviceInterfaceDetailA(devInfo, &ifData, &detail.data, sizeof(detail), NULL, NULL)) continue;
-
-        HANDLE cand = CreateFileA(detail.data.DevicePath, GENERIC_READ | GENERIC_WRITE,
-                                    FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
-        if (cand == INVALID_HANDLE_VALUE) continue;
-
-        HIDD_ATTRIBUTES attrs = {.Size = sizeof(attrs)};
-        if (HidD_GetAttributes(cand, &attrs) && attrs.VendorID == 0x054C && attrs.ProductID == 0x0CE6) {
-            h = cand;
-            strncpy(foundPath, detail.data.DevicePath, sizeof(foundPath) - 1);
-        } else {
-            CloseHandle(cand);
-        }
-    }
-    SetupDiDestroyDeviceInfoList(devInfo);
+    HANDLE h = result.h;
+    char *foundPath = result.path;
 
     if (h == INVALID_HANDLE_VALUE) {
         printf("DualSense (VID_054C PID_0CE6) not found via raw HID enumeration.\n");
@@ -2802,11 +2859,11 @@ static int capture_dualsense_raw(void) {
     printf("CHANGED reports are shown/logged. Press Ctrl+C when you're done -- full detail is written\n");
     printf("to %s.\n\n", INSTALL_LOG_FILE);
 
-    BYTE report[1024];
+    BYTE report[HID_REPORT_BUF_SIZE];
     DWORD reportLen = caps.InputReportByteLength;
     if (reportLen == 0 || reportLen > sizeof(report)) reportLen = sizeof(report);
 
-    BYTE lastReport[1024] = {0};
+    BYTE lastReport[HID_REPORT_BUF_SIZE] = {0};
     int haveLast = 0;
     int lineNum = 0;
 
@@ -2915,7 +2972,7 @@ static int capture_gamesir_raw(void) {
         }
 
         candidateCount++;
-        int isBluetooth = strstr(detail.data.DevicePath, "00805f9b34fb") != NULL;
+        int isBluetooth = strstr(detail.data.DevicePath, BT_HID_GUID_SUBSTRING) != NULL;
         printf("Found interface #%d: PID_%04X, %s, InputReportByteLength=%lu, %s\n", candidateCount,
                 attrs.ProductID, isBluetooth ? "Bluetooth" : "not Bluetooth (wired/dongle)",
                 (unsigned long)candReportLen, detail.data.DevicePath);
@@ -2950,11 +3007,11 @@ static int capture_gamesir_raw(void) {
     printf("are shown/logged. Press Ctrl+C when you're done -- full detail is written to %s.\n\n",
             INSTALL_LOG_FILE);
 
-    BYTE report[1024];
+    BYTE report[HID_REPORT_BUF_SIZE];
     DWORD reportLen = foundReportLen;
     if (reportLen == 0 || reportLen > sizeof(report)) reportLen = sizeof(report);
 
-    BYTE lastReport[1024] = {0};
+    BYTE lastReport[HID_REPORT_BUF_SIZE] = {0};
     int haveLast = 0;
     int lineNum = 0;
 
@@ -3032,7 +3089,7 @@ typedef struct {
 
 static DWORD WINAPI keepalive_read_thread(LPVOID arg) {
     KeepaliveReadArgs *a = (KeepaliveReadArgs *)arg;
-    BYTE report[1024];
+    BYTE report[HID_REPORT_BUF_SIZE];
     LARGE_INTEGER freq, start, lastGood, now;
     QueryPerformanceFrequency(&freq);
     QueryPerformanceCounter(&start);
@@ -3055,38 +3112,27 @@ static DWORD WINAPI keepalive_read_thread(LPVOID arg) {
     }
 }
 
+static int find_dualsense_bt_cb(const char *devicePath, void *userdata) {
+    HANDLE *out = (HANDLE *)userdata;
+    if (!strstr(devicePath, BT_HID_GUID_SUBSTRING)) return 0; /* Bluetooth only, same as the real backend */
+    HANDLE cand = CreateFileA(devicePath, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                                OPEN_EXISTING, 0, NULL);
+    if (cand == INVALID_HANDLE_VALUE) return 0;
+    HIDD_ATTRIBUTES attrs = {.Size = sizeof(attrs)};
+    if (HidD_GetAttributes(cand, &attrs) && attrs.VendorID == SONY_VID && attrs.ProductID == DUALSENSE_PID) {
+        *out = cand;
+        return 1;
+    }
+    CloseHandle(cand);
+    return 0;
+}
+
 static int test_dualsense_keepalive(void) {
-    GUID hidGuid;
-    HidD_GetHidGuid(&hidGuid);
-    HDEVINFO devInfo = SetupDiGetClassDevsA(&hidGuid, NULL, NULL, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
-    if (devInfo == INVALID_HANDLE_VALUE) {
+    HANDLE h = INVALID_HANDLE_VALUE;
+    if (walk_hid_devices(find_dualsense_bt_cb, &h) < 0) {
         printf("SetupDiGetClassDevsA failed.\n");
         return 0;
     }
-
-    HANDLE h = INVALID_HANDLE_VALUE;
-    SP_DEVICE_INTERFACE_DATA ifData = {.cbSize = sizeof(ifData)};
-    for (DWORD i = 0; h == INVALID_HANDLE_VALUE && SetupDiEnumDeviceInterfaces(devInfo, NULL, &hidGuid, i, &ifData);
-          i++) {
-        union {
-            SP_DEVICE_INTERFACE_DETAIL_DATA_A data;
-            char buf[512];
-        } detail;
-        detail.data.cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_A);
-        if (!SetupDiGetDeviceInterfaceDetailA(devInfo, &ifData, &detail.data, sizeof(detail), NULL, NULL)) continue;
-        if (!strstr(detail.data.DevicePath, "00805f9b34fb")) continue; /* Bluetooth only, same as the real backend */
-
-        HANDLE cand = CreateFileA(detail.data.DevicePath, GENERIC_READ | GENERIC_WRITE,
-                                    FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
-        if (cand == INVALID_HANDLE_VALUE) continue;
-        HIDD_ATTRIBUTES attrs = {.Size = sizeof(attrs)};
-        if (HidD_GetAttributes(cand, &attrs) && attrs.VendorID == 0x054C && attrs.ProductID == 0x0CE6) {
-            h = cand;
-        } else {
-            CloseHandle(cand);
-        }
-    }
-    SetupDiDestroyDeviceInfoList(devInfo);
 
     if (h == INVALID_HANDLE_VALUE) {
         printf("DualSense (Bluetooth) not found.\n");
@@ -3108,7 +3154,7 @@ static int test_dualsense_keepalive(void) {
               (unsigned long)caps.FeatureReportByteLength);
 
     if (caps.OutputReportByteLength > 0 && caps.OutputReportByteLength <= 1024) {
-        BYTE outReport[1024] = {0};
+        BYTE outReport[HID_REPORT_BUF_SIZE] = {0};
         outReport[0] = 0x31; /* Sony's documented Bluetooth output report ID for this controller family --
                                   payload left all-zero on purpose, this test isn't trying to trigger rumble/LED
                                   yet, only testing whether the write itself extends the connection */
@@ -3237,7 +3283,7 @@ static void ds4_hat_to_dpad(BYTE hat, WORD *buttons) {
    history. */
 static int poll_sony_bt_report(HANDLE h, DWORD report_len, BYTE expect_report_id, int base, XINPUT_GAMEPAD *gp) {
     if (h == INVALID_HANDLE_VALUE) return 0;
-    static BYTE report[1024];
+    static BYTE report[HID_REPORT_BUF_SIZE];
     DWORD read = 0;
     if (!ReadFile(h, report, report_len, &read, NULL) || read == 0) return 0;
     /* Detects "the controller went away/idle but ReadFile keeps returning
@@ -3252,7 +3298,7 @@ static int poll_sony_bt_report(HANDLE h, DWORD report_len, BYTE expect_report_id
        and the relay cycles back to waiting -- picking the controller back
        up automatically on the next successful reconnect. */
 #define BT_STALE_CONTENT_TIMEOUT_MS 3000
-    static BYTE lastContent[1024];
+    static BYTE lastContent[HID_REPORT_BUF_SIZE];
     static DWORD lastContentLen = 0;
     static ULONGLONG lastChangeTick = 0;
     ULONGLONG now = GetTickCount64();
@@ -3388,14 +3434,14 @@ static int setup_dualsense_raw_hid(void) {
            device paths on Windows embed the standard Bluetooth HID
            service class GUID ("0000112...-...-...-00805f9b34fb"); a wired
            USB path never contains that substring. */
-        if (!strstr(detail.data.DevicePath, "00805f9b34fb")) continue;
+        if (!strstr(detail.data.DevicePath, BT_HID_GUID_SUBSTRING)) continue;
 
         HANDLE h = CreateFileA(detail.data.DevicePath, GENERIC_READ | GENERIC_WRITE,
                                 FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
         if (h == INVALID_HANDLE_VALUE) continue;
 
         HIDD_ATTRIBUTES attrs = {.Size = sizeof(attrs)};
-        if (HidD_GetAttributes(h, &attrs) && attrs.VendorID == 0x054C && attrs.ProductID == 0x0CE6) {
+        if (HidD_GetAttributes(h, &attrs) && attrs.VendorID == SONY_VID && attrs.ProductID == DUALSENSE_PID) {
             PHIDP_PREPARSED_DATA preparsed = NULL;
             HIDP_CAPS caps = {0};
             if (HidD_GetPreparsedData(h, &preparsed) && HidP_GetCaps(preparsed, &caps) == HIDP_STATUS_SUCCESS &&
@@ -3417,7 +3463,7 @@ static int setup_dualsense_raw_hid(void) {
                    at all -- worst case is the same pre-existing idle-
                    after-a-few-seconds behavior, not a new failure. */
                 if (caps.OutputReportByteLength > 0 && caps.OutputReportByteLength <= 1024) {
-                    BYTE keepAlive[1024] = {0};
+                    BYTE keepAlive[HID_REPORT_BUF_SIZE] = {0};
                     keepAlive[0] = 0x31;
                     BOOL ok = HidD_SetOutputReport(h, keepAlive, caps.OutputReportByteLength);
                     log_line("dualsense rawhid: keep-alive output report (%lu bytes) = %s",
@@ -3500,7 +3546,7 @@ static int poll_dualsense_raw_hid(XINPUT_GAMEPAD *gp) {
 static int poll_dualsense_wired_raw_hid(XINPUT_GAMEPAD *gp) {
     HANDLE h = g_dualsense_raw_handle;
     if (h == INVALID_HANDLE_VALUE) return 0;
-    static BYTE report[1024];
+    static BYTE report[HID_REPORT_BUF_SIZE];
     DWORD read = 0;
     if (!ReadFile(h, report, g_dualsense_raw_report_len, &read, NULL) || read == 0) return 0;
 
@@ -3508,7 +3554,7 @@ static int poll_dualsense_wired_raw_hid(XINPUT_GAMEPAD *gp) {
        own comment explains -- kept independent here, not shared, so a
        change to one can never silently affect the other. */
 #define DUALSENSE_WIRED_STALE_TIMEOUT_MS 3000
-    static BYTE lastContent[1024];
+    static BYTE lastContent[HID_REPORT_BUF_SIZE];
     static DWORD lastContentLen = 0;
     static ULONGLONG lastChangeTick = 0;
     ULONGLONG now = GetTickCount64();
@@ -3595,8 +3641,8 @@ static int setup_ps_wired_raw_hid(void) {
         detail.data.cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_A);
         if (!SetupDiGetDeviceInterfaceDetailA(devInfo, &ifData, &detail.data, sizeof(detail), NULL, NULL)) continue;
 
-        if (!strstr(detail.data.DevicePath, "vid_054c")) continue; /* cheap pre-filter, same as the BT backends' own */
-        if (strstr(detail.data.DevicePath, "00805f9b34fb")) continue; /* Bluetooth -- handled by the BT-specific
+        if (!strstr(detail.data.DevicePath, SONY_VID_PATH_SUBSTRING)) continue; /* cheap pre-filter, same as the BT backends' own */
+        if (strstr(detail.data.DevicePath, BT_HID_GUID_SUBSTRING)) continue; /* Bluetooth -- handled by the BT-specific
                                                                             backends above, not here */
 
         HANDLE h = CreateFileA(detail.data.DevicePath, GENERIC_READ | GENERIC_WRITE,
@@ -3604,8 +3650,8 @@ static int setup_ps_wired_raw_hid(void) {
         if (h == INVALID_HANDLE_VALUE) continue;
 
         HIDD_ATTRIBUTES attrs = {.Size = sizeof(attrs)};
-        int isDs4 = HidD_GetAttributes(h, &attrs) && attrs.VendorID == 0x054C && is_ds4_product_id(attrs.ProductID);
-        int isDualSense = !isDs4 && attrs.VendorID == 0x054C && attrs.ProductID == 0x0CE6;
+        int isDs4 = HidD_GetAttributes(h, &attrs) && attrs.VendorID == SONY_VID && is_ds4_product_id(attrs.ProductID);
+        int isDualSense = !isDs4 && attrs.VendorID == SONY_VID && attrs.ProductID == DUALSENSE_PID;
         if (isDs4 || isDualSense) {
             PHIDP_PREPARSED_DATA preparsed = NULL;
             HIDP_CAPS caps = {0};
@@ -4323,6 +4369,53 @@ static int is_single_mapped_button(DWORD mask) {
     return mask != 0 && vjoy_slot_for_phys(mask) != 0;
 }
 
+/* Sentinel for capture_single_button_impl()'s capture_timeout_ms: wait for
+   a valid press with no overall time limit. */
+#define CAPTURE_NO_TIMEOUT ((DWORD)-1)
+
+/* Shared by capture_any_single_button() and capture_any_button_with_timeout()
+   below -- previously two near-identical functions, differing only in
+   how long each of the same two phases was allowed to wait. Both loop
+   waiting for a validated single physical-input press
+   (is_single_mapped_button() -- see its own comment for why only a
+   single recognizable input is accepted here, unlike
+   capture_button_from_controller() above, which intentionally allows a
+   two-button combo and so isn't a third candidate for this merge),
+   holding for 150ms to reject transient noise before accepting it.
+   release_wait_ms bounds an initial "wait for whatever's already held to
+   be released" phase (0 skips it entirely and arms immediately, same as
+   capture_any_button_with_timeout() never had this phase at all);
+   capture_timeout_ms bounds the press-wait phase itself
+   (CAPTURE_NO_TIMEOUT for no limit, same as capture_any_single_button()'s
+   original bare infinite loop). Returns the captured mask, or 0 if
+   capture_timeout_ms elapsed with nothing valid captured -- release_wait_ms
+   elapsing on its own is never itself a time-out, capture still proceeds
+   with whatever's currently held afterward, exactly as before. */
+static DWORD capture_single_button_impl(backend_t backend, int userIndex, DWORD release_wait_ms,
+                                          DWORD capture_timeout_ms) {
+    for (DWORD waited_ms = 0; waited_ms < release_wait_ms && read_any_physical_input(backend, userIndex) != 0;
+          waited_ms += 20)
+        Sleep(20);
+
+    LARGE_INTEGER freq, start, now;
+    if (capture_timeout_ms != CAPTURE_NO_TIMEOUT) {
+        QueryPerformanceFrequency(&freq);
+        QueryPerformanceCounter(&start);
+    }
+    for (;;) {
+        DWORD now_pressed = read_any_physical_input(backend, userIndex);
+        if (is_single_mapped_button(now_pressed)) {
+            Sleep(150);
+            if (read_any_physical_input(backend, userIndex) == now_pressed) return now_pressed;
+        }
+        if (capture_timeout_ms != CAPTURE_NO_TIMEOUT) {
+            QueryPerformanceCounter(&now);
+            if ((double)(now.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart >= capture_timeout_ms) return 0;
+        }
+        Sleep(20);
+    }
+}
+
 static DWORD capture_any_single_button(backend_t backend, int userIndex) {
     /* Wait for release before arming -- bounded, not infinite: a
        DirectInput device whose trigger axes read as permanently "pressed"
@@ -4330,32 +4423,11 @@ static DWORD capture_any_single_button(backend_t backend, int userIndex) {
        forever with no way out short of Ctrl+C. After ~5s, just proceed with
        whatever's held; the "hold steady" check below still requires a
        clean, unchanging single-button read to actually accept anything. */
-    for (int waited_ms = 0; waited_ms < 5000 && read_any_physical_input(backend, userIndex) != 0; waited_ms += 20)
-        Sleep(20);
-    for (;;) {
-        DWORD now_pressed = read_any_physical_input(backend, userIndex);
-        if (is_single_mapped_button(now_pressed)) {
-            Sleep(150);
-            if (read_any_physical_input(backend, userIndex) == now_pressed) return now_pressed;
-        }
-        Sleep(20);
-    }
+    return capture_single_button_impl(backend, userIndex, 5000, CAPTURE_NO_TIMEOUT);
 }
 
 static DWORD capture_any_button_with_timeout(backend_t backend, int userIndex, DWORD timeout_ms) {
-    LARGE_INTEGER freq, start, now;
-    QueryPerformanceFrequency(&freq);
-    QueryPerformanceCounter(&start);
-    for (;;) {
-        DWORD now_pressed = read_any_physical_input(backend, userIndex);
-        if (is_single_mapped_button(now_pressed)) {
-            Sleep(150);
-            if (read_any_physical_input(backend, userIndex) == now_pressed) return now_pressed;
-        }
-        QueryPerformanceCounter(&now);
-        if ((double)(now.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart >= timeout_ms) return 0;
-        Sleep(20);
-    }
+    return capture_single_button_impl(backend, userIndex, 0, timeout_ms);
 }
 
 /* Triggered by pressing M while the live dashboard is showing -- fixes the
@@ -4646,6 +4718,26 @@ static int service_exists(const char *service_name) {
     CloseServiceHandle(scm);
     return exists;
 }
+
+/* Single source of truth for the three drivers this project installs --
+   previously the same {display name, service name} facts were retyped
+   across several independent ad-hoc lists (check_pending_reboot()'s own
+   still_pending OR-chain, check_and_install_drivers()'s local `drivers[]`,
+   and run_uninstall()'s local `results[]`), so adding/renaming a driver
+   meant hunting down every copy. Every one of those now reads from this
+   single array instead (see DRIVER_COUNT below). */
+typedef struct {
+    const char *display;
+    const char *service;
+    const char *inf_relpath;
+    const char *hardware_id;
+} DriverInfo;
+static const DriverInfo DRIVER_TABLE[] = {
+    {"vJoy", "vjoy", "drivers\\vjoy\\vjoy.inf", "root\\VID_1234&PID_BEAD&REV_0219"},
+    {"HIDHide", "HidHide", "drivers\\hidhide\\HidHide.inf", "root\\HidHide"},
+    {"ViGEmBus", "ViGEmBus", "drivers\\vigembus\\ViGEmBus.inf", "Nefarius\\ViGEmBus\\Gen1"},
+};
+#define DRIVER_COUNT (sizeof(DRIVER_TABLE) / sizeof(DRIVER_TABLE[0]))
 
 /* Plain registry read, no elevation needed for that (confirmed: reading
    this same key works fine from a non-admin session) -- lets
@@ -4952,8 +5044,10 @@ static void check_pending_reboot(void) {
         return;
     }
 
-    int still_pending = service_exists("vjoy") == 1 || service_exists("HidHide") == 1 ||
-                          service_exists("ViGEmBus") == 1;
+    int still_pending = 0;
+    for (size_t i = 0; i < DRIVER_COUNT; i++) {
+        if (service_exists(DRIVER_TABLE[i].service) == 1) { still_pending = 1; break; }
+    }
     if (!still_pending) {
         DeleteFileA(marker_path); /* reboot happened since the uninstall -- fully resolved, stop reminding */
         return;
@@ -4999,16 +5093,7 @@ static void check_and_install_drivers(void) {
     if (fresh) fclose(fresh);
     log_line("=== Driver check/install run ===");
 
-    struct {
-        const char *display;
-        const char *service;
-        const char *inf_relpath;
-        const char *hardware_id;
-    } drivers[] = {
-        {"vJoy", "vjoy", "drivers\\vjoy\\vjoy.inf", "root\\VID_1234&PID_BEAD&REV_0219"},
-        {"HIDHide", "HidHide", "drivers\\hidhide\\HidHide.inf", "root\\HidHide"},
-        {"ViGEmBus", "ViGEmBus", "drivers\\vigembus\\ViGEmBus.inf", "Nefarius\\ViGEmBus\\Gen1"},
-    };
+    const DriverInfo *drivers = DRIVER_TABLE;
 
     /* Figure out everything that needs doing FIRST (all plain reads, no
        elevation needed for any of these checks), then run it all through
@@ -5021,10 +5106,10 @@ static void check_and_install_drivers(void) {
     char exe_path[MAX_PATH];
     GetModuleFileNameA(NULL, exe_path, sizeof(exe_path));
 
-    int driver_missing[3] = {0, 0, 0};
+    int driver_missing[DRIVER_COUNT] = {0};
     int any_missing = 0;
     printf("Checking for required drivers...\n\n");
-    for (size_t i = 0; i < sizeof(drivers) / sizeof(drivers[0]); i++) {
+    for (size_t i = 0; i < DRIVER_COUNT; i++) {
         int r = service_exists(drivers[i].service);
         if (r < 0) {
             printf("  %-10s could not check (failed to open Service Control Manager)\n", drivers[i].display);
@@ -5078,7 +5163,7 @@ static void check_and_install_drivers(void) {
 
     char script[8192];
     int len = 0;
-    for (size_t i = 0; i < sizeof(drivers) / sizeof(drivers[0]); i++) {
+    for (size_t i = 0; i < DRIVER_COUNT; i++) {
         if (!driver_missing[i]) continue;
         char inf_path[MAX_PATH * 2];
         snprintf(inf_path, sizeof(inf_path), "%s%s", exe_dir, drivers[i].inf_relpath);
@@ -5132,7 +5217,7 @@ static void check_and_install_drivers(void) {
         return;
     }
 
-    for (size_t i = 0; i < sizeof(drivers) / sizeof(drivers[0]); i++) {
+    for (size_t i = 0; i < DRIVER_COUNT; i++) {
         if (!driver_missing[i]) continue;
         int r2 = service_exists(drivers[i].service);
         printf("  %-10s %s\n", drivers[i].display,
@@ -5392,23 +5477,38 @@ static int streq_ci(const char *a, const char *b) {
    touches anything outside these two value names under this one registry
    path. Self-invoked elevated via --clean-hidhide-filters, same pattern
    as --configure-vjoy/--create-root-device above. */
-static int clean_hidhide_filters(void) {
+/* Shared walk for both clean_hidhide_filters() and count_hidhide_filter_refs()
+   below -- previously the exact same registry traversal (enumerate every
+   class under Control\Class, inspect its UpperFilters/LowerFilters
+   REG_MULTI_SZ values for the literal string "HidHide") was independently
+   typed out twice, once to modify and once to just count. modify=0 only
+   counts occurrences (needs no elevation -- HKLM\...\Control\Class is
+   world-readable -- used to PROVE the modify=1 pass actually worked
+   before run_uninstall() ever tells the user it's safe to reboot, instead
+   of just hoping the elevated step succeeded); modify=1 also strips
+   "HidHide" out of any value that has it, preserving every other entry
+   untouched (Steam's own "steamxbox", or any other remap tool's filter),
+   deleting the whole value only when HidHide was the only thing in it.
+   Returns the count found (modify=0) or removed (modify=1), or -1 if the
+   scan itself couldn't even start (treated as "not verified", never as
+   "verified clean"). */
+static int walk_hidhide_filters(int modify) {
     HKEY classesKey;
     if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Control\\Class", 0, KEY_READ, &classesKey) !=
         ERROR_SUCCESS) {
-        log_line("clean_hidhide_filters: couldn't open Control\\Class at all");
+        if (modify) log_line("clean_hidhide_filters: couldn't open Control\\Class at all");
         return -1;
     }
 
-    int cleaned = 0;
+    REGSAM subkeyAccess = modify ? (KEY_QUERY_VALUE | KEY_SET_VALUE) : KEY_QUERY_VALUE;
+    int total = 0;
     char subkeyName[256];
     for (DWORD i = 0;; i++) {
         DWORD nameLen = sizeof(subkeyName);
         if (RegEnumKeyExA(classesKey, i, subkeyName, &nameLen, NULL, NULL, NULL, NULL) != ERROR_SUCCESS) break;
 
         HKEY subKey;
-        if (RegOpenKeyExA(classesKey, subkeyName, 0, KEY_QUERY_VALUE | KEY_SET_VALUE, &subKey) != ERROR_SUCCESS)
-            continue;
+        if (RegOpenKeyExA(classesKey, subkeyName, 0, subkeyAccess, &subKey) != ERROR_SUCCESS) continue;
 
         static const char *filterNames[2] = {"UpperFilters", "LowerFilters"};
         for (int f = 0; f < 2; f++) {
@@ -5418,6 +5518,13 @@ static int clean_hidhide_filters(void) {
             if (RegQueryValueExA(subKey, filterNames[f], NULL, &type, buf, &bufLen) != ERROR_SUCCESS ||
                 type != REG_MULTI_SZ)
                 continue;
+
+            if (!modify) {
+                for (char *p = (char *)buf; (DWORD)(p - (char *)buf) < bufLen && *p; p += strlen(p) + 1) {
+                    if (streq_ci(p, "HidHide")) total++;
+                }
+                continue;
+            }
 
             char out[2048];
             DWORD outLen = 0;
@@ -5443,53 +5550,17 @@ static int clean_hidhide_filters(void) {
                 log_line("clean_hidhide_filters: removed HidHide from %s on %s, other entries preserved",
                           filterNames[f], subkeyName);
             }
-            cleaned++;
+            total++;
         }
         RegCloseKey(subKey);
     }
     RegCloseKey(classesKey);
-    log_line("clean_hidhide_filters: done, %d filter value(s) had HidHide removed", cleaned);
-    return cleaned;
-}
-
-/* Read-only, needs no elevation (HKLM\...\Control\Class is world-readable)
-   -- used to PROVE clean_hidhide_filters() actually worked before
-   run_uninstall() ever tells the user it's safe to reboot, instead of
-   just hoping the elevated step succeeded. Same walk as above, just
-   counts instead of modifying. -1 if the scan itself couldn't run at all
-   (treated as "not verified", never as "verified clean"). */
-static int count_hidhide_filter_refs(void) {
-    HKEY classesKey;
-    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Control\\Class", 0, KEY_READ, &classesKey) !=
-        ERROR_SUCCESS)
-        return -1;
-
-    int total = 0;
-    char subkeyName[256];
-    for (DWORD i = 0;; i++) {
-        DWORD nameLen = sizeof(subkeyName);
-        if (RegEnumKeyExA(classesKey, i, subkeyName, &nameLen, NULL, NULL, NULL, NULL) != ERROR_SUCCESS) break;
-
-        HKEY subKey;
-        if (RegOpenKeyExA(classesKey, subkeyName, 0, KEY_QUERY_VALUE, &subKey) != ERROR_SUCCESS) continue;
-
-        static const char *filterNames[2] = {"UpperFilters", "LowerFilters"};
-        for (int f = 0; f < 2; f++) {
-            BYTE buf[2048];
-            DWORD bufLen = sizeof(buf);
-            DWORD type = 0;
-            if (RegQueryValueExA(subKey, filterNames[f], NULL, &type, buf, &bufLen) != ERROR_SUCCESS ||
-                type != REG_MULTI_SZ)
-                continue;
-            for (char *p = (char *)buf; (DWORD)(p - (char *)buf) < bufLen && *p; p += strlen(p) + 1) {
-                if (streq_ci(p, "HidHide")) total++;
-            }
-        }
-        RegCloseKey(subKey);
-    }
-    RegCloseKey(classesKey);
+    if (modify) log_line("clean_hidhide_filters: done, %d filter value(s) had HidHide removed", total);
     return total;
 }
+
+static int clean_hidhide_filters(void) { return walk_hidhide_filters(1); }
+static int count_hidhide_filter_refs(void) { return walk_hidhide_filters(0); }
 
 /* Windows' own System Restore -- not anything custom, the actual proper
    rollback mechanism for a driver-level operation going wrong in some way
@@ -5925,18 +5996,15 @@ static int run_uninstall(void) {
         printf("%s for details.\n\n", INSTALL_LOG_FILE);
     }
 
-    struct { const char *display; const char *service; } results[] = {
-        {"vJoy", "vjoy"}, {"HIDHide", "HidHide"}, {"ViGEmBus", "ViGEmBus"},
-    };
     int any_still_present = 0;
-    for (size_t i = 0; i < sizeof(results) / sizeof(results[0]); i++) {
-        int still_present = service_exists(results[i].service) == 1;
+    for (size_t i = 0; i < DRIVER_COUNT; i++) {
+        int still_present = service_exists(DRIVER_TABLE[i].service) == 1;
         if (still_present) any_still_present = 1;
-        printf("  %-8s %s\n", results[i].display,
+        printf("  %-8s %s\n", DRIVER_TABLE[i].display,
                still_present ? "still shows a service (may need a reboot to fully clear -- this is normal for "
                                 "some drivers, not an error)"
                              : "removed.");
-        log_line("uninstall: %s -- service %s after uninstall attempt", results[i].display,
+        log_line("uninstall: %s -- service %s after uninstall attempt", DRIVER_TABLE[i].display,
                   still_present ? "STILL PRESENT" : "gone");
     }
 
@@ -6425,7 +6493,7 @@ int main(int argc, char **argv) {
                 if (setup_dinput_device()) {
                     WORD vid = (WORD)(g_dinput_vid_pid & 0xFFFFu);
                     WORD pid = (WORD)((g_dinput_vid_pid >> 16) & 0xFFFFu);
-                    if (vid == 0x054C && is_ds4_product_id(pid) && is_ds4_present_over_bt()) {
+                    if (vid == SONY_VID && is_ds4_product_id(pid) && is_ds4_present_over_bt()) {
                         /* A real DS4, over BLUETOOTH specifically, ended up
                            here instead of via setup_ds4_raw_hid() above --
                            a confirmed, real, already-established
@@ -6486,7 +6554,7 @@ int main(int argc, char **argv) {
                 backend == BACKEND_DS4_RAWHID || backend == BACKEND_DUALSENSE_RAWHID ||
                 backend == BACKEND_DS4_WIRED_RAWHID || backend == BACKEND_DUALSENSE_WIRED_RAWHID;
             if (!is_ps_controller && backend == BACKEND_DINPUT) {
-                is_ps_controller = (WORD)(g_dinput_vid_pid & 0xFFFFu) == 0x054C;
+                is_ps_controller = (WORD)(g_dinput_vid_pid & 0xFFFFu) == SONY_VID;
             }
             if (is_ps_controller) {
                 g_toggle_button_mask = PHYS_PS_BUTTON;

@@ -87,6 +87,8 @@ Full plain-English matrix, connection by connection: **[Controller Compatibility
 
 Both limitations above are genuine Windows/hardware constraints, investigated in depth rather than assumed — the linked sections explain exactly why, and what was tried.
 
+**HOTAS mode and force feedback:** flying with a HOTAS setup currently gets no vibration/force feedback from the sim itself — Normal-mode rumble (the row above) is unaffected either way. Real DualSense/DualShock HD-haptic force feedback is planned for a future release; see [issue #10](https://github.com/spongebobmoviept-lab/RuthlessControllerRelay/issues/10) for current status.
+
 ## Is this safe to run?
 
 Yes, for the overwhelming majority of games and use cases. This is worth explaining properly rather than just linking a warning, because "installs drivers" understandably sounds scarier than it is:

@@ -74,6 +74,14 @@ Every documented combination — both APIs, both radios, output handle kept full
 
 **If you want to pick this up:** the most promising untried direction, based on the research above, is switching the Bluetooth input read loop to asynchronous (`OVERLAPPED`) I/O so a write can be issued without contending with a blocking read on the same handle — this specific combination was identified as worth trying but was not actually attempted or tested. Given the protocol-level evidence above, treat it as a real experiment with a real chance of still not working, not a known fix waiting to be typed in.
 
+## HOTAS mode has no force feedback / vibration yet
+
+**Symptom:** flying with a HOTAS setup in HOTAS mode, a sim's stall buffet, G-load, or trim-force effects produce no vibration on the controller at all, regardless of controller type. Normal-mode rumble (an ordinary gamepad game vibrating the controller) is completely unaffected — this is specifically about force feedback sent by a sim to a joystick.
+
+**Why:** in HOTAS mode, the game reads the virtual joystick (vJoy), not the virtual gamepad — and the shipped 1.0 build has no code that reads or acts on force-feedback data at all, even though vJoy itself is capable of carrying it. The virtual gamepad's own rumble-forwarding (the mechanism behind the Normal-mode row in the compatibility table above) stays fully connected in HOTAS mode too, so if a game happens to also send ordinary gamepad rumble while flying, that would already come through — but a sim's actual joystick force feedback is a separate thing this build doesn't touch yet.
+
+**Status:** in active development on a separate, not-yet-released branch — real DualSense HD-haptic-motor support (not just basic rumble) is the goal, using vJoy's own documented force-feedback API. Tracked in [issue #10](https://github.com/spongebobmoviept-lab/RuthlessControllerRelay/issues/10), including current progress and the one open problem blocking it. Not part of this release, no ETA promised.
+
 ## Anti-cheat
 
 This section exists to give real, checked findings instead of either false reassurance or vague fear — it is not exhaustive, and it is deliberately written to be specific about how narrow the actual concern is.

@@ -17,6 +17,10 @@ Full rumble, lightbar/LED color, and battery reporting, wherever the hardware an
 
 ---
 
+> **⚠️ If you use Steam: Steam Input must be disabled for the game you're playing, or this software will not work correctly.** Steam Input reads your real controller directly, which bypasses everything below no matter what this software does. Library → right-click the game → Properties → Controller → set "Override for \<game\>" to **Disable Steam Input**. This is a requirement, not a suggestion — do it before you launch anything.
+
+---
+
 ## The problem this solves
 
 Flight sims, space sims, and other HOTAS-style games bind their controls to a real **joystick** device — a flight stick, a throttle, a yoke. A gamepad isn't one of those, and Windows treats "gamepad" and "joystick" as genuinely different device classes, not just a labeling difference. If you don't own a real HOTAS setup and want to fly with a PS4/PS5 or Xbox controller instead, there was no clean, single tool that could present it as a virtual joystick to that one flight sim, while still behaving like a normal controller everywhere else — switchable live, with no reboot and no unplug/replug.
@@ -52,9 +56,10 @@ Three separate pieces of driver engineering make this possible — **[vJoy](http
 ## Quick start
 
 1. Download the latest build from [Releases](../../releases), or [build it yourself](#building-from-source).
-2. Run `RuthlessControllerRelay.exe`. On first run it self-installs vJoy/HidHide/ViGEmBus if they aren't already present (see [how and why](docs/DEVELOPMENT_JOURNEY.md#core-architecture)).
-3. Connect a controller — the dashboard shows what it detected and what it's currently presenting to games.
-4. Press `Ctrl+Alt+H` (or the controller-side combo shown on the dashboard) to switch between **HOTAS mode** and **Normal mode**.
+2. **Using Steam? Steam Input must be disabled for the game you're about to play — this is required, not optional.** Steam Library → right-click the game → Properties → Controller → set "Override for \<game\>" to **Disable Steam Input**. Steam Input reads your real controller directly and defeats everything below, no matter what this software does — do this before anything else, not after something looks wrong.
+3. Run `RuthlessControllerRelay.exe`. On first run it self-installs vJoy/HidHide/ViGEmBus if they aren't already present (see [how and why](docs/DEVELOPMENT_JOURNEY.md#core-architecture)).
+4. Connect a controller — the dashboard shows what it detected and what it's currently presenting to games.
+5. Press `Ctrl+Alt+H` (or the controller-side combo shown on the dashboard) to switch between **HOTAS mode** and **Normal mode**.
 
 For a plain-English "is this working right now" guide with no jargon, see the **[Compatibility Cheat Sheet (PDF)](docs/Controller_Compatibility_Cheat_Sheet.pdf)**.
 

@@ -2,6 +2,15 @@
 
 These are real, deliberately investigated conclusions, not gaps left from lack of effort. Each is written up in enough technical detail here that nobody needs to re-derive it from scratch.
 
+## Steam Input must be disabled
+
+If you launch your game through Steam, two separate Steam settings can each independently break this software, and both are worth checking:
+
+- **Steam Input** — Steam's own controller-remapping layer, active by default for many games. It reads your real controller directly, which can make the real controller reach the game no matter what this software or HidHide does underneath it — there is no way for this software to reach into or override Steam's own input handling, since that's a different vendor's application state, not a plain OS setting. Turn it off for the specific game: Steam Library → right-click the game → Properties → Controller → set "Override for \<game\>" to **Disable Steam Input** (or turn it off globally in Steam Settings → Controller if you don't use Steam Input anywhere).
+- **"Guide Button Focuses Steam"** — a separate, unrelated setting that only affects the Guide-button mode toggle specifically (see [below](#the-xboxguide-button--solved-and-confirmed-on-real-hardware)) — Steam Settings → Controller → General Controller Settings.
+
+These are independent of each other and can both be on at once, causing different-looking symptoms — check both if the real controller still seems to reach the game, or if the Guide button isn't toggling modes.
+
 ## The Xbox/Guide button — solved, and confirmed on real hardware
 
 **Update:** this was originally written up as flatly impossible. Further digging found a real, working path, and it's now the **default** mode-toggle trigger for a fresh Xbox controller setup — the same status the PS button has for PlayStation controllers. Confirmed working end-to-end on real hardware on 2026-09-09, including through the official Xbox Wireless Adapter dongle: pressing Guide reliably toggles HOTAS/Normal mode, and the Windows Game Bar overlay does not open while doing it.
@@ -10,7 +19,7 @@ These are real, deliberately investigated conclusions, not gaps left from lack o
 
 **The actual blocker, and the fix:** even with `XInputGetStateEx`, the Guide bit doesn't reliably set at all while Windows' Xbox Game Bar is actively capturing that button — confirmed directly by an XInput library maintainer's own account of the exact same problem. The fix is a single registry value, `HKCU\SOFTWARE\Microsoft\GameBar\UseNexusForGameBarEnabled`, set to `0` for the session. This software does that automatically the moment an Xbox controller connects and the undocumented API is available — it reads whatever value was already there before touching it, and restores that exact value (not a guessed default) on every exit path (normal exit, Ctrl+C, or the controller disconnecting), the same discipline already used for HidHide's own cloak toggle. This is a real, visible side effect worth knowing about, which is exactly why it's documented here and in the generated ini file's own comments, not just silently done.
 
-**A separate thing this software can't fix: Steam.** If Steam is running, it independently intercepts the Guide button to focus its own overlay — confirmed directly in Valve's own developer documentation, and completely unrelated to the Game Bar mechanism above (there's no registry key for it, and disabling one does not disable the other). If Guide doesn't seem to toggle modes, check Steam's own Settings → Controller → "Guide Button Focuses Steam" (or disable Steam Input for the specific game via its Properties → Controller tab) — this software has no way to reach into Steam's own configuration, by design, since that's a different vendor's application state, not a plain OS setting.
+**A separate thing this software can't fix: Steam.** If Steam is running, it independently intercepts the Guide button to focus its own overlay — confirmed directly in Valve's own developer documentation, and completely unrelated to the Game Bar mechanism above (there's no registry key for it, and disabling one does not disable the other). See [Steam Input must be disabled](#steam-input-must-be-disabled) above.
 
 **If you'd rather not use Guide:** set `button=back+start` (or any other combo) by hand — Back+Start is still fully supported, just no longer the automatic default for a fresh Xbox setup. Unlike the PS/Guide buttons, a Back+Start press *is* still forwarded to whatever the game sees on the virtual gamepad, same as any other button — see the note in the README about why that's deliberate, unchanged behavior rather than an oversight.
 

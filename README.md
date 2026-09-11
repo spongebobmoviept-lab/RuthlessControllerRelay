@@ -17,7 +17,7 @@ Full rumble, lightbar/LED color, and battery reporting, wherever the hardware an
 
 ---
 
-> **⚠️ If you use Steam: Steam Input must be disabled for the game you're playing, or this software will not work correctly.** Steam Input reads your real controller directly, which bypasses everything below no matter what this software does. Library → right-click the game → Properties → Controller → set "Override for \<game\>" to **Disable Steam Input**. This is a requirement, not a suggestion — do it before you launch anything.
+> **⚠️ Using Steam? Disable Steam Input for the game first** — it bypasses this software entirely otherwise. Details: [Known Limitations](docs/KNOWN_LIMITATIONS.md#steam-input-must-be-disabled).
 
 ---
 
@@ -56,7 +56,7 @@ Three separate pieces of driver engineering make this possible — **[vJoy](http
 ## Quick start
 
 1. Download the latest build from [Releases](../../releases), or [build it yourself](#building-from-source).
-2. **Using Steam? Steam Input must be disabled for the game you're about to play — this is required, not optional.** Steam Library → right-click the game → Properties → Controller → set "Override for \<game\>" to **Disable Steam Input**. Steam Input reads your real controller directly and defeats everything below, no matter what this software does — do this before anything else, not after something looks wrong.
+2. **Using Steam?** [Disable Steam Input](docs/KNOWN_LIMITATIONS.md#steam-input-must-be-disabled) for the game first.
 3. Run `RuthlessControllerRelay.exe`. On first run it self-installs vJoy/HidHide/ViGEmBus if they aren't already present (see [how and why](docs/DEVELOPMENT_JOURNEY.md#core-architecture)).
 4. Connect a controller — the dashboard shows what it detected and what it's currently presenting to games.
 5. Press `Ctrl+Alt+H` (or the controller-side combo shown on the dashboard) to switch between **HOTAS mode** and **Normal mode**.
@@ -75,10 +75,7 @@ For a plain-English "is this working right now" guide with no jargon, see the **
 
 **The controller-side default depends on what's plugged in the first time you ever run it**: a PlayStation controller defaults to the PS button alone, and an Xbox controller defaults to the **Guide/Xbox-logo button** — confirmed working on real hardware, including through the official Xbox Wireless Adapter dongle. Neither button ever reaches whatever the game sees, so it can't collide with anything the game itself does. This is decided once, the very first time a controller connects on a fresh install, and never overwritten afterward — change it any time with `R`, or by hand-editing `button=` in `ruthless_controller_relay.ini` (e.g. `button=back+start` for the classic combo instead). Full story, including why the newer Share button doesn't get the same treatment, in [Known Limitations](docs/KNOWN_LIMITATIONS.md#the-xboxguide-button--solved-and-confirmed-on-real-hardware).
 
-**If you use Steam, two separate Steam settings can each independently break this software, and both need checking — this isn't optional:**
-- **Steam Input** intercepts your controller directly for any game it's active on, which can make the real controller reach the game no matter what this software or HidHide does underneath it. Turn it off for the specific game: Steam Library → right-click the game → Properties → Controller → set "Override for \<game\>" to **Disable Steam Input** (or turn it off globally in Steam Settings → Controller if you don't use Steam Input anywhere).
-- **"Guide Button Focuses Steam"** is a separate setting that only affects the Guide-button mode toggle specifically (see above) — Steam Settings → Controller → General Controller Settings.
-Both can be on at the same time and cause different-looking problems; check both if anything seems to be reading the real controller or the Guide button isn't toggling modes.
+Two separate Steam settings can each independently break this — see [Known Limitations](docs/KNOWN_LIMITATIONS.md#steam-input-must-be-disabled) if you use Steam.
 
 When the PS button (or touchpad) is configured as the toggle specifically, it's deliberately never also forwarded as a normal vJoy button at the same time — so it can't do double duty as both a mode-switch and a bound joystick action. (This doesn't apply to standard buttons like Back+Start, which keep working as ordinary vJoy buttons even while also serving as the toggle combo — unchanged, long-standing behavior.)
 
@@ -99,16 +96,7 @@ Both limitations above are genuine Windows/hardware constraints, investigated in
 
 ## Is this safe to run?
 
-Yes, for the overwhelming majority of games and use cases. This is worth explaining properly rather than just linking a warning, because "installs drivers" understandably sounds scarier than it is:
-
-- **The three drivers this uses are not obscure or homemade.** vJoy, ViGEmBus, and HidHide are all Microsoft WHQL-signed (verified via `Get-AuthenticodeSignature` — real code-signing, not a self-signed or unsigned package), and all three have been in wide, everyday use for years. ViGEmBus and HidHide together are the same foundation [DS4Windows](https://github.com/Ryochan7/DS4Windows) runs on, a tool with a massive install base among PlayStation-controller-on-PC users. vJoy specifically predates this whole project by a decade and is the de facto standard virtual joystick across the entire flight-sim and sim-racing community — if you've ever mapped a gamepad to a flight stick for a sim, there's a good chance vJoy was already involved.
-- **This is exactly what HOTAS-expecting games actually want.** A flight sim asking for real joystick axes isn't an edge case this tool is sneaking past — it's the intended, designed-for input method for that entire genre. Using vJoy to feed it isn't a workaround or an exploit, it's the standard way that genre of game has always been played with a gamepad.
-- **This is not a keyboard/mouse interception tool.** It contains no keyboard hook, no keystroke injection, and no dependency on [Interception](https://github.com/oblitum/Interception) or anything like it (the driver UCR and similar keyboard/mouse-to-joystick remappers use, and a materially different, more-watched-for category than a controller relay) — checked directly against the source, not assumed. It only ever reads a real physical controller through ordinary consumer APIs and re-presents that same data through a virtual joystick/gamepad. See **[docs/KNOWN_LIMITATIONS.md § This is not a keyboard/mouse interception tool](docs/KNOWN_LIMITATIONS.md#this-is-not-a-keyboardmouse-interception-tool)** for the full detail.
-- **The actual risk is narrow, specific, and about one thing: kernel-level anti-cheat in competitive multiplayer games.** Some (not most) anti-cheat systems scan for exactly this class of driver and will refuse to launch, or flag it, regardless of whether you're actually doing anything questionable — they can't tell "flight-sim joystick relay" apart from "cheat input injector" at the driver level, so they block the whole category. This has nothing to do with single-player games, the vast majority of multiplayer games without kernel-level anti-cheat, or anything this tool actually does with the data it relays.
-- **One real, specific, confirmed case, so you don't have to guess:** Battlefield 6's "Javelin" anti-cheat refuses to launch with ViGEmBus-based tools running, and has community reports of blocking HidHide too — and BF6 doesn't need this tool anyway, since it has native DualSense support already. That's the one confirmed example found; it is not evidence of a general pattern. Full findings, including what's genuinely uncertain vs. confirmed, are in **[docs/KNOWN_LIMITATIONS.md § Anti-cheat](docs/KNOWN_LIMITATIONS.md#anti-cheat)**.
-- **A full `--uninstall` is built in regardless**, as a real, no-questions-asked way to completely remove all three drivers in one step before playing something you're specifically unsure about — not because this is inherently risky, but because "just don't run it" isn't quite enough for a driver-enumeration scan, and it costs nothing to make removal just as easy as installation.
-
-If you're only ever using this for a HOTAS-style single-player flight/space/vehicle sim, or Normal-mode gamepad use in a game without kernel-level anti-cheat, none of the above needs a second thought.
+Yes, for the overwhelming majority of games and use cases — vJoy/ViGEmBus/HidHide are Microsoft-signed, widely used (the same foundation [DS4Windows](https://github.com/Ryochan7/DS4Windows) runs on), and this contains no keyboard/mouse interception of any kind. The one real, narrow exception is kernel-level anti-cheat in competitive multiplayer games, which can block driver-level tools like this regardless of intent — one confirmed case, not a general pattern. A full `--uninstall` is built in either way. Full detail, including exactly what's confirmed vs. uncertain: **[Known Limitations § Anti-cheat](docs/KNOWN_LIMITATIONS.md#anti-cheat)**.
 
 ## Building from source
 

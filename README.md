@@ -17,6 +17,8 @@ Full rumble, lightbar/LED color, and battery reporting, wherever the hardware an
 
 ---
 
+> **⚠️ On v1.0.0? Update to [v1.0.1](../../releases/tag/v1.0.1).** In v1.0.0, if your controller turns off or falls asleep while the relay is running, the relay can lock onto its own virtual controller. Input stops, your real controller can become visible to the game, and the only fix is restarting both. The version is shown at the top of the relay window; v1.0.0 shows no number there. [What went wrong](docs/DEVELOPMENT_JOURNEY.md#a-sleeping-controller-made-the-relay-read-its-own-virtual-pad-fixed-in-v101) · [Changelog](CHANGELOG.md)
+
 > **⚠️ Using Steam? Disable Steam Input for the game first** — it bypasses this software entirely otherwise. Details: [Known Limitations](docs/KNOWN_LIMITATIONS.md#steam-input-must-be-disabled).
 
 ---
@@ -111,7 +113,7 @@ zig cc -target x86_64-windows-gnu -O2 -Wall -Wextra \
     -I third_party -I third_party/vigem_client \
     -o RuthlessControllerRelay.exe \
     src/hotas_relay.c resources/hotas_relay_manifest.res \
-    -ldinput8 -ldxguid -lole32 -lcomdlg32 -ladvapi32 -lshell32 -lsetupapi -lnewdev -lhid
+    -ldinput8 -ldxguid -lole32 -lcomdlg32 -ladvapi32 -lshell32 -lsetupapi -lnewdev -lhid -lcfgmgr32
 ```
 
 `third_party/vigem_client/ViGEmClient.dll` and the contents of `third_party/drivers/` need to sit next to the built exe at runtime — see [docs/DEVELOPMENT_JOURNEY.md](docs/DEVELOPMENT_JOURNEY.md) for exactly why the driver payload is structured this way instead of shelling out to each vendor's own GUI installer.

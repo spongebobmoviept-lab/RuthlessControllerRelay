@@ -40,12 +40,13 @@
  * an XInput pad through a wireless dongle) can.
  *
  * Build:
- *   windres hotas_relay.rc -O coff -o hotas_relay_manifest.o
- *   zig cc -target x86_64-windows-gnu -O2 -I vigem_client -o RuthlessControllerRelay.exe ^
- *       hotas_relay.c hotas_relay_manifest.o ^
- *       -ldinput8 -ldxguid -lole32 -lcomdlg32 -ladvapi32 -lshell32 -lsetupapi -lnewdev -lhid
+ *   zig rc hotas_relay.rc   (-> hotas_relay_manifest.res, manifest + icon)
+ *   zig cc -target x86_64-windows-gnu -O2 -Wall -Wextra -I vigem_client -o RuthlessControllerRelay.exe ^
+ *       hotas_relay.c hotas_relay_manifest.res ^
+ *       -ldinput8 -ldxguid -lole32 -lcomdlg32 -ladvapi32 -lshell32 -lsetupapi -lnewdev -lhid -lcfgmgr32
+ *   (same again with -DSAFE_MODE_NO_EXTRAS -o RuthlessControllerRelay_SAFE.exe for the fallback build)
  *
- * (hotas_relay_manifest.o embeds hotas_relay.manifest, which requests
+ * (hotas_relay_manifest.res embeds hotas_relay.manifest, which requests
  * requireAdministrator -- this exe now always runs elevated, every launch,
  * no exceptions, because vJoy's virtual device is created fresh on launch
  * and fully destroyed on exit (see destroy_vjoy_root_devices()), which
@@ -76,6 +77,7 @@
 #include <windows.h>
 #include <stdarg.h>
 #include <setupapi.h>
+#include <cfgmgr32.h>
 #include <devguid.h>
 #include <newdev.h>
 #include <hidusage.h>
@@ -90,6 +92,13 @@
 #define COBJMACROS
 #include <dinput.h>
 #include <commdlg.h>
+
+/* Shown in the dashboard/waiting-screen header so anyone can tell at a
+   glance which release they're running -- added with 1.0.1, the first
+   release that fixed a bug serious enough that people needed to know
+   whether they still had the old build (see CHANGELOG.md). Bump this with
+   every GitHub release. */
+#define RELAY_VERSION "1.0.1"
 
 #define HIDHIDE_CLI "\"C:\\Program Files\\Nefarius Software Solutions\\HidHide\\x64\\HidHideCLI.exe\""
 #define TOGGLE_HOTKEY_ID 1
@@ -349,6 +358,38 @@ static PVIGEM_TARGET g_vigem_target = NULL;
    key handling. */
 static int g_vigem_emulate_ds4 = 0;
 
+/* REAL BUG found 2026-10-01, on real hardware (GameSir G7 Pro on its
+   2.4GHz dongle, which puts itself to sleep after ~10 minutes of no
+   input): the virtual pad used to be destroyed every time the real
+   controller dropped, and the very next "first XInput slot that answers"
+   scan grabbed the relay's OWN still-disappearing virtual X360 pad as if
+   it were the real controller -- dashboard said READY, Updates/sec 0.0,
+   battery "wired", sticks frozen, and the real controller was never
+   picked back up again when it woke. The game had also lost the virtual
+   pad it was reading, so the only way out was restarting both. Now the
+   virtual pad lives for the whole session (neutral while no controller
+   is connected) and every detection path skips it explicitly:
+     - XInput: by slot number, this variable (-1 = unknown, or a DS4-type
+       pad, which never occupies an XInput slot at all). Found by
+       probe_vigem_xinput_slot() -- NOT vigem_target_x360_get_user_index(),
+       which was the first attempt and failed on real hardware the same
+       day: that call returns xusb22's own player number, which only counts
+       XUSB (360-style) devices, while XInput's slots also count Xbox One-
+       style GIP controllers like the GameSir dongle. Confirmed live: it
+       said slot 0, the virtual pad was actually on slot 1 (the real
+       controller had slot 0), so the scan skipped the wrong slot and
+       latched onto the virtual pad all over again.
+     - DirectInput / raw HID / HidHide: by device tree, see
+       instance_id_is_vigem_child(). */
+static int g_vigem_xinput_slot = -1;
+
+/* The REAL controller's XInput slot for rumble forwarding, -1 when the
+   real controller isn't an XInput one (or nothing is connected). Used
+   instead of the notification callbacks' userData, which is fixed at
+   registration time -- the virtual pad now outlives any one controller
+   connection, so the real controller's slot can change underneath it. */
+static volatile LONG g_rumble_xinput_slot = -1;
+
 /* Battery status for the dashboard -- two genuinely different data
    sources feeding one display, because the two controller families
    expose completely different granularity and there's no way to make
@@ -381,6 +422,13 @@ static int g_battery_coarse = 0;   /* valid when g_battery_src == BATTERY_SRC_CO
    always gets its own real attempt instead of inheriting the previous
    one's success. */
 static int g_hidhide_registered = 0;
+
+/* The real controller's HidHide device path this session last hid
+   successfully -- kept hidden even when a later reconnect's registration
+   attempt fails (see register_with_hidhide()), so a controller that
+   simply went to sleep never comes back un-hidden. Empty until the first
+   successful registration. */
+static char g_hidden_real_path[256] = "";
 
 /* Raw, untranslated DirectInput state -- kept around purely so the
    dashboard can show every axis/slider value DirectInput actually
@@ -656,6 +704,50 @@ static void unescape_backslashes(char *s) {
     *w = '\0';
 }
 
+/* 1 if this device node -- or anything above it in the device tree -- is
+   driven by ViGEmBus, i.e. it's a virtual pad (ours, now that ours stays
+   present all session; see g_vigem_xinput_slot's comment). Confirmed on
+   the real machine 2026-10-01: the virtual X360 pad's HID interface sits
+   at HID\VID_045E&PID_028E&IG_01\... -> USB\VID_045E&PID_028E&IG_01\...
+   -> USB\VID_045E&PID_028E\01 (xusb22) -> ROOT\SYSTEM\00xx (service
+   "ViGEmBus"), while a real controller's chain runs up through a USB hub
+   / Bluetooth stack instead. VID/PID alone can't tell them apart (a real
+   wired 360 pad and a virtual one are both 045E:028E; a real DS4 and a
+   virtual one are both 054C:05C4). Unknown/unlocatable nodes count as
+   NOT virtual, so this can only ever skip something, never invent one. */
+static int instance_id_is_vigem_child(const char *instance_id) {
+    DEVINST dev;
+    if (CM_Locate_DevNodeA(&dev, (DEVINSTID_A)instance_id, CM_LOCATE_DEVNODE_NORMAL) != CR_SUCCESS) return 0;
+    for (int depth = 0; depth < 8; depth++) {
+        char svc[64];
+        ULONG len = sizeof(svc);
+        if (CM_Get_DevNode_Registry_PropertyA(dev, CM_DRP_SERVICE, NULL, svc, &len, 0) == CR_SUCCESS &&
+             _stricmp(svc, "ViGEmBus") == 0)
+            return 1;
+        DEVINST parent;
+        if (CM_Get_Parent(&parent, dev, 0) != CR_SUCCESS) return 0;
+        dev = parent;
+    }
+    return 0;
+}
+
+/* Same check, from a device INTERFACE path (what SetupDi enumeration and
+   DirectInput's DIPROP_GUIDANDPATH hand back) instead of an instance ID:
+   "\\?\hid#vid_045e&pid_028e&ig_01#3&966d8b0&0&0000#{interface-guid}"
+   -> "hid\vid_045e&pid_028e&ig_01\3&966d8b0&0&0000" (CM_Locate_DevNode
+   is case-insensitive). */
+static int interface_path_is_vigem_child(const char *path) {
+    if (!strncmp(path, "\\\\?\\", 4) || !strncmp(path, "\\\\.\\", 4)) path += 4;
+    size_t n = strlen(path);
+    const char *guid = strrchr(path, '#');
+    if (guid && guid[1] == '{') n = (size_t)(guid - path);
+    char id[512];
+    if (n == 0 || n >= sizeof(id)) return 0;
+    for (size_t i = 0; i < n; i++) id[i] = path[i] == '#' ? '\\' : path[i];
+    id[n] = '\0';
+    return instance_id_is_vigem_child(id);
+}
+
 /* Finds the real, currently-connected controller's HidHide device
    instance path via --dev-gaming, so it can be registered automatically
    (see register_with_hidhide() below) instead of requiring one-time
@@ -737,20 +829,27 @@ static int find_real_controller_hidhide_path(char *path_out, size_t path_out_len
             dip += strlen("\"deviceInstancePath\" : \"");
             char *dip_end = strchr(dip, '"');
             if (dip_end) {
+                char cand[512];
                 size_t n = (size_t)(dip_end - dip);
-                if (n >= path_out_len) n = path_out_len - 1;
-                if (!have_first) {
-                    memcpy(first_path, dip, n < sizeof(first_path) - 1 ? n : sizeof(first_path) - 1);
-                    first_path[n < sizeof(first_path) - 1 ? n : sizeof(first_path) - 1] = '\0';
-                    unescape_backslashes(first_path);
-                    have_first = 1;
-                }
-                if (!is_bt) {
-                    memcpy(path_out, dip, n);
-                    path_out[n] = '\0';
-                    unescape_backslashes(path_out);
-                    *chunk_end = saved;
-                    return 1; /* prefer USB -- stop as soon as one is found */
+                if (n >= sizeof(cand)) n = sizeof(cand) - 1;
+                memcpy(cand, dip, n);
+                cand[n] = '\0';
+                unescape_backslashes(cand);
+                /* Our own virtual pad now stays present across a real
+                   controller's reconnect (see g_vigem_xinput_slot's
+                   comment), so it's in this listing whenever a reconnect
+                   registers -- and an X360-type one even looks like the
+                   preferred USB transport. Never a candidate. */
+                if (!instance_id_is_vigem_child(cand)) {
+                    if (!have_first) {
+                        snprintf(first_path, sizeof(first_path), "%s", cand);
+                        have_first = 1;
+                    }
+                    if (!is_bt) {
+                        snprintf(path_out, path_out_len, "%s", cand);
+                        *chunk_end = saved;
+                        return 1; /* prefer USB -- stop as soon as one is found */
+                    }
                 }
             }
         }
@@ -822,6 +921,9 @@ static int unhide_stale_hidhide_devices(const char *keep_path, char *out_args, s
         if (pathLen >= sizeof(path)) pathLen = sizeof(path) - 1;
         memcpy(path, pathStart, pathLen);
         path[pathLen] = '\0';
+        unescape_backslashes(path); /* no-op if --dev-list prints single backslashes; keep_path never has doubled ones,
+                                        and since 2026-10-01 a mismatch here would un-hide the very controller
+                                        the failure path is trying to keep hidden */
 
         if (streq_ci(path, keep_path) == 0) { /* not the one we're about to (re-)hide -- stale, unhide it */
             int n = snprintf(out_args + used, out_size - used, " --dev-unhide \"%s\"", path);
@@ -862,13 +964,24 @@ static int unhide_stale_hidhide_devices(const char *keep_path, char *out_args, s
    exposed. Now unhides everything whenever this returns 0, so a repeated
    failure to identify the real controller never leaves something else
    wrongly hidden indefinitely -- "nothing hidden" is always safer than
-   "the wrong thing hidden". */
+   "the wrong thing hidden".
+   A THIRD REAL BUG, found 2026-10-01 on real hardware: that "unhide
+   everything" also un-hid THIS session's own real controller whenever it
+   merely went to sleep and the reconnect logic then failed to find it
+   (see g_vigem_xinput_slot's comment for how that happened) -- confirmed
+   via HidHideCLI --dev-list coming back completely empty while the relay
+   was still running, so the controller would have been fully visible to
+   the game the moment it woke up. The one path this session successfully
+   hid (g_hidden_real_path) now always survives a failed attempt; anything
+   else is still cleared exactly as before. */
 static int register_with_hidhide(void) {
     char dev_path[256];
     if (!find_real_controller_hidhide_path(dev_path, sizeof(dev_path))) {
-        log_line("hidhide: no real controller found via --dev-gaming, skipping registration");
+        log_line("hidhide: no real controller found via --dev-gaming, skipping registration (keeping \"%s\" hidden)",
+                  g_hidden_real_path);
         char unhide_args[4096];
-        if (unhide_stale_hidhide_devices("", unhide_args, sizeof(unhide_args)) > 0) run_hidhide(unhide_args);
+        if (unhide_stale_hidhide_devices(g_hidden_real_path, unhide_args, sizeof(unhide_args)) > 0)
+            run_hidhide(unhide_args);
         return 0;
     }
     char exe_path[MAX_PATH];
@@ -883,6 +996,7 @@ static int register_with_hidhide(void) {
     int rc = run_hidhide(args);
     log_line("hidhide: registered device %s + app %s + cloak-on, cleared %d stale entry(ies) (exit %d)", dev_path,
               exe_path, stale, rc);
+    snprintf(g_hidden_real_path, sizeof(g_hidden_real_path), "%s", dev_path);
     return 1;
 }
 
@@ -1797,13 +1911,17 @@ static void render_waiting_screen(UINT rid, int was_ever_connected) {
     clear_console();
 
     set_color(CLR_WHITE_BR);
-    printf("=== Ruthless Controller Relay -- vJoy device #%u ===\n\n", rid);
+    printf("=== Ruthless Controller Relay v" RELAY_VERSION " -- vJoy device #%u ===\n\n", rid);
     set_color(CLR_BANNER_UNKNOWN);
     printf(" NOT READY -- waiting for a controller...                              \n");
     set_color(CLR_NORMAL);
     if (was_ever_connected) {
         printf("\nController disconnected. Turn it back on / reconnect it -- this will\n");
         printf("pick it back up on its own, no need to restart.\n");
+        if (g_vigem_target) {
+            printf("Your game keeps its virtual controller while you wait -- no need to\n");
+            printf("restart the game either.\n");
+        }
     } else {
         printf("\nTurn on / connect any Xbox-style or PlayStation controller any time --\n");
         printf("this keeps checking and will pick it up automatically, no restart needed.\n");
@@ -1912,7 +2030,7 @@ static void render_dashboard(const XINPUT_GAMEPAD *gp, double updates_per_sec, U
                                         : " MODE UNKNOWN -- press Ctrl+Alt+H once to set it                      ";
 
     set_color(CLR_WHITE_BR);
-    printf("=== Ruthless Controller Relay -- vJoy device #%u ===          \n", rid);
+    printf("=== Ruthless Controller Relay v" RELAY_VERSION " -- vJoy device #%u ===   \n", rid);
     set_color(CLR_CYAN);
     printf("Controller: %-52s\n", describe_controller(g_backend));
     /* See g_battery_src's own comment for exactly what each source can and
@@ -2137,11 +2255,39 @@ typedef struct { GUID instance; DWORD vidPid; } DiCandidate;
 static DiCandidate g_di_candidates[MAX_DI_CANDIDATES];
 static int g_di_candidate_count = 0;
 
+/* 1 if this DirectInput instance is a ViGEmBus virtual pad -- our own one
+   shows up here too (DirectInput lists XInput pads as well, and a DS4-type
+   virtual pad is a plain HID gamepad), and since 2026-10-01 it stays
+   present while the wait loop is looking for a real controller (see
+   g_vigem_xinput_slot's comment). Positive answers are cached by instance
+   GUID so the 4x/sec wait loop doesn't reopen the same virtual device
+   every pass. */
+static int di_instance_is_vigem(const GUID *guidInstance) {
+    static GUID known_virtual[8];
+    static int known_count = 0;
+    for (int i = 0; i < known_count; i++)
+        if (IsEqualGUID(&known_virtual[i], guidInstance)) return 1;
+
+    LPDIRECTINPUTDEVICE8 dev = NULL;
+    if (FAILED(IDirectInput8_CreateDevice(g_di, guidInstance, &dev, NULL))) return 0;
+    DIPROPGUIDANDPATH gp = {.diph = {sizeof(gp), sizeof(gp.diph), 0, DIPH_DEVICE}};
+    int is_virtual = 0;
+    if (SUCCEEDED(IDirectInputDevice8_GetProperty(dev, DIPROP_GUIDANDPATH, &gp.diph))) {
+        char path[MAX_PATH];
+        if (WideCharToMultiByte(CP_ACP, 0, gp.wszPath, -1, path, sizeof(path), NULL, NULL) > 0)
+            is_virtual = interface_path_is_vigem_child(path);
+    }
+    IDirectInputDevice8_Release(dev);
+    if (is_virtual && known_count < 8) known_virtual[known_count++] = *guidInstance;
+    return is_virtual;
+}
+
 static BOOL CALLBACK enum_joystick_cb(const DIDEVICEINSTANCEA *inst, VOID *ctx) {
     (void)ctx;
     WORD vid = (WORD)(inst->guidProduct.Data1 & 0xFFFFu);
     WORD pid = (WORD)((inst->guidProduct.Data1 >> 16) & 0xFFFFu);
     if (vid == VJOY_VID && pid == VJOY_PID) return DIENUM_CONTINUE; /* skip our own virtual output device */
+    if (di_instance_is_vigem(&inst->guidInstance)) return DIENUM_CONTINUE; /* and our own virtual gamepad */
     if (g_di_candidate_count < MAX_DI_CANDIDATES) {
         g_di_candidates[g_di_candidate_count].instance = inst->guidInstance;
         g_di_candidates[g_di_candidate_count].vidPid = ((DWORD)pid << 16) | vid;
@@ -2663,6 +2809,8 @@ static int setup_ds4_raw_hid(void) {
            verbatim, so this skips straight past anything that can't
            possibly be Sony hardware without ever touching it. */
         if (!strstr(detail.data.DevicePath, "vid_054c")) continue;
+        if (interface_path_is_vigem_child(detail.data.DevicePath)) continue; /* our own DS4-type virtual pad is
+                                                                                 054C:05C4 too -- never "the" DS4 */
 
         HANDLE h = CreateFileA(detail.data.DevicePath, GENERIC_READ | GENERIC_WRITE,
                                 FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
@@ -3598,6 +3746,9 @@ static int setup_ps_wired_raw_hid(void) {
         if (!strstr(detail.data.DevicePath, "vid_054c")) continue; /* cheap pre-filter, same as the BT backends' own */
         if (strstr(detail.data.DevicePath, "00805f9b34fb")) continue; /* Bluetooth -- handled by the BT-specific
                                                                             backends above, not here */
+        if (interface_path_is_vigem_child(detail.data.DevicePath)) continue; /* our own DS4-type virtual pad looks
+                                                                                 exactly like a wired DS4 here --
+                                                                                 see g_vigem_xinput_slot's comment */
 
         HANDLE h = CreateFileA(detail.data.DevicePath, GENERIC_READ | GENERIC_WRITE,
                                 FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
@@ -3864,9 +4015,11 @@ static int load_vigem(void) {
     return ok;
 }
 
-/* Called once a real controller is found and vJoy is acquired -- creates
-   the virtual controller and leaves it present for the rest of this
-   connection's lifetime. Failure here is non-fatal: the relay still works
+/* Called when the FIRST real controller of the session is found (and
+   again on a V-key type switch) -- creates the virtual controller and
+   leaves it present for the rest of the session, across any number of
+   real-controller disconnects/reconnects (see g_vigem_xinput_slot's
+   comment for why). Failure here is non-fatal: the relay still works
    via vJoy alone, just without the future gamepad-emulation path (e.g. if
    ViGEmBus isn't installed on an older bundle, or the DLL didn't load). */
 
@@ -3885,9 +4038,11 @@ static int load_vigem(void) {
        recently set (see that function's comment) -- a PS controller
        standing in for an Xbox pad still gets real rumble, just no color
        data to forward (X360's notification carries no lightbar field).
-     - real is an XInput/Xbox-style pad: forward via XInputSetState using
-       the physical slot index fixed at registration time (userData, see
-       vigem_setup() below).
+     - real is an XInput/Xbox-style pad: forward via XInputSetState to
+       g_rumble_xinput_slot, read live on every call (it used to be fixed
+       at registration time via userData -- stale since 2026-10-01, when
+       the virtual pad started outliving any one controller connection).
+     - neither (nothing connected right now): dropped.
    LedNumber is intentionally ignored either way -- there's no XInput call
    to set a real Xbox pad's player-LED (confirmed 2026-09-08: XInput's
    public API has no such function, and this exact controller exposes no
@@ -3906,7 +4061,10 @@ static VOID CALLBACK x360_rumble_notification(PVIGEM_CLIENT client, PVIGEM_TARGE
         return;
     }
     if (!pXInputSetState) return;
-    int userIndex = (int)(INT_PTR)userData;
+    (void)userData;
+    LONG userIndex = g_rumble_xinput_slot; /* read live, see its comment -- the real controller may have
+                                               reconnected on a different slot since this was registered */
+    if (userIndex < 0) return; /* no real XInput controller connected right now */
     XINPUT_VIBRATION vib;
     /* Real XInput rumble is 16-bit (0-65535); ViGEmBus's notification gives
        the 8-bit (0-255) value the game actually sent to the virtual pad --
@@ -3949,14 +4107,16 @@ static VOID CALLBACK ds4_rumble_notification(PVIGEM_CLIENT client, PVIGEM_TARGET
         return;
     }
     if (!pXInputSetState) return;
-    int userIndex = (int)(INT_PTR)userData;
+    (void)userData;
+    LONG userIndex = g_rumble_xinput_slot; /* same live read as x360_rumble_notification() */
+    if (userIndex < 0) return;
     XINPUT_VIBRATION vib;
     vib.wLeftMotorSpeed = (WORD)largeMotor * 257;
     vib.wRightMotorSpeed = (WORD)smallMotor * 257;
     pXInputSetState((DWORD)userIndex, &vib);
 }
 
-static void vigem_setup(backend_t backend, int userIndex) {
+static void vigem_setup(void) {
     if (!g_vigem_available) {
         log_line("vigem: skipped, DLL never loaded");
         return;
@@ -3994,12 +4154,17 @@ static void vigem_setup(backend_t backend, int userIndex) {
     log_line("vigem: %s target created and added successfully (is_attached=%d)", g_vigem_emulate_ds4 ? "ds4" : "x360",
               pvigem_target_is_attached(g_vigem_target));
 
-    /* Rumble-forwarding only makes sense when BOTH the virtual pad the game
-       writes to -- the callback itself (x360_rumble_notification, above)
-       now handles forwarding to EITHER a real XInput pad OR a real PS
-       controller, so this registers whenever the virtual pad is X360-type
-       and there's some real controller (of either kind) actually capable
-       of receiving rumble, regardless of whether the two types match.
+    g_vigem_xinput_slot = -1; /* found by probe_vigem_xinput_slot() when the real controller drops -- the only time
+                                  the wait loop's scan needs it */
+
+    /* Rumble-forwarding: the callbacks themselves (x360_rumble_notification
+       and ds4_rumble_notification, above) forward to EITHER a real XInput
+       pad OR a real PS controller, whichever is connected at the moment a
+       game rumbles, regardless of whether the two types match -- so this
+       registers unconditionally now. It used to only register when the
+       controller connected at setup time could take rumble, but the
+       virtual pad now outlives that controller (see g_vigem_xinput_slot's
+       comment), and the callbacks already drop it when nothing can.
        Verified end-to-end on real hardware 2026-09-08: rumbling the
        VIRTUAL pad's own XInput slot (exactly what a real game does)
        correctly reached the real physical Xbox controller through this
@@ -4009,23 +4174,20 @@ static void vigem_setup(backend_t backend, int userIndex) {
        inside it -- not yet separately hardware-verified as of this
        writing, unlike the Xbox-real case above.) */
 #ifndef SAFE_MODE_NO_EXTRAS
-    if (!g_vigem_emulate_ds4 && (backend == BACKEND_XINPUT || g_ps_output_handle != INVALID_HANDLE_VALUE)) {
+    if (!g_vigem_emulate_ds4) {
         VIGEM_ERROR notifyErr = pvigem_target_x360_register_notification(g_vigem_client, g_vigem_target,
-                                                                            x360_rumble_notification,
-                                                                            (LPVOID)(INT_PTR)userIndex);
+                                                                            x360_rumble_notification, NULL);
         if (notifyErr == VIGEM_ERROR_NONE) log_line("vigem: x360 rumble-forwarding registered");
         else log_line("vigem: x360 rumble-forwarding FAILED to register (error 0x%08X)", (unsigned)notifyErr);
     }
     /* DS4-type counterpart -- see ds4_rumble_notification()'s own comment
        for why this uses the register/callback API and not a manual poll.
-       Same "either real controller type, regardless of virtual type"
-       condition as the X360 case above. Not yet hardware-verified as of
-       this writing (the polling version broke wired PS5 input; this
-       rewrite hasn't had its own real-hardware pass yet). */
-    if (g_vigem_emulate_ds4 && (backend == BACKEND_XINPUT || g_ps_output_handle != INVALID_HANDLE_VALUE)) {
+       Not yet hardware-verified as of this writing (the polling version
+       broke wired PS5 input; this rewrite hasn't had its own real-hardware
+       pass yet). */
+    if (g_vigem_emulate_ds4) {
         VIGEM_ERROR notifyErr = pvigem_target_ds4_register_notification(g_vigem_client, g_vigem_target,
-                                                                            ds4_rumble_notification,
-                                                                            (LPVOID)(INT_PTR)userIndex);
+                                                                            ds4_rumble_notification, NULL);
         if (notifyErr == VIGEM_ERROR_NONE) log_line("vigem: ds4 rumble-forwarding registered");
         else log_line("vigem: ds4 rumble-forwarding FAILED to register (error 0x%08X)", (unsigned)notifyErr);
     }
@@ -4056,7 +4218,29 @@ static void vigem_teardown(void) {
         pvigem_free(g_vigem_client);
         g_vigem_client = NULL;
     }
+    g_vigem_xinput_slot = -1;
     LeaveCriticalSection(&g_output_lock);
+}
+
+/* Whether the virtual pad can safely stay present while no real
+   controller is connected: only when every detection path can tell it
+   apart from a real controller. The device-tree check covers DirectInput/
+   raw HID/HidHide unconditionally; XInput needs the slot number, so an
+   X360-type pad whose slot probe_vigem_xinput_slot() couldn't find can't
+   stay (the main loop falls back to the old recreate-per-connection
+   behavior for it instead). */
+static int vigem_pad_can_outlive_controller(void) {
+    if (!g_vigem_target) return 0;
+    return g_vigem_emulate_ds4 || g_vigem_xinput_slot >= 0;
+}
+
+static int count_connected_xinput_slots(void) {
+    int n = 0;
+    for (DWORD i = 0; i < 4; i++) {
+        XINPUT_STATE st;
+        if (pXInputGetState(i, &st) == ERROR_SUCCESS) n++;
+    }
+    return n;
 }
 
 /* Feeds the virtual controller either the real live state or an all-
@@ -4150,6 +4334,63 @@ static void vigem_update(const XINPUT_GAMEPAD *gp) {
         pvigem_target_ds4_update(g_vigem_client, g_vigem_target, report);
     }
     LeaveCriticalSection(&g_output_lock);
+}
+
+/* All-zero gamepad == centered sticks, released triggers/buttons on either
+   virtual pad type (vigem_update() maps 0 to DS4's 0x80 stick center).
+   Sent when the real controller drops, so a stick or button held at that
+   instant doesn't stay stuck on the still-present virtual pad. */
+static void vigem_send_neutral(void) {
+    XINPUT_GAMEPAD neutral;
+    memset(&neutral, 0, sizeof(neutral));
+    vigem_update(&neutral);
+}
+
+/* Finds which XInput slot the X360-type virtual pad is on by asking
+   XInput itself: write a distinctive near-zero state to the virtual pad,
+   see which slot reports exactly that, then do it again with a second,
+   different state and require the same slot -- a real controller matching
+   both by coincidence isn't plausible. Values are 1-5 out of 255/32767,
+   far inside any game's deadzone, held for a few ms, and only ever sent
+   when the real controller has just dropped (the pad is about to go
+   neutral anyway). Ends with the pad neutral. Returns 0-3, or -1 if no
+   slot reflected it within ~0.5s per pass (or the pad is DS4-type, which
+   has no XInput slot). See g_vigem_xinput_slot's comment for why this
+   replaced vigem_target_x360_get_user_index(). */
+static int probe_vigem_xinput_slot(void) {
+    if (!g_vigem_target || g_vigem_emulate_ds4) return -1;
+    int found = -1;
+    for (int pass = 0; pass < 2; pass++) {
+        XUSB_REPORT sig;
+        XUSB_REPORT_INIT(&sig);
+        sig.bLeftTrigger = pass ? 2 : 1;
+        sig.bRightTrigger = pass ? 1 : 2;
+        sig.sThumbLX = pass ? -3 : 3;
+        sig.sThumbRY = pass ? 5 : -5;
+        EnterCriticalSection(&g_output_lock);
+        if (g_vigem_target) pvigem_target_x360_update(g_vigem_client, g_vigem_target, sig);
+        LeaveCriticalSection(&g_output_lock);
+
+        int slot = -1;
+        for (int waited = 0; waited < 500 && slot < 0; waited += 10) {
+            for (DWORD i = 0; i < 4 && slot < 0; i++) {
+                XINPUT_STATE st;
+                if (pXInputGetState(i, &st) == ERROR_SUCCESS && st.Gamepad.wButtons == sig.wButtons &&
+                    st.Gamepad.bLeftTrigger == sig.bLeftTrigger && st.Gamepad.bRightTrigger == sig.bRightTrigger &&
+                    st.Gamepad.sThumbLX == sig.sThumbLX && st.Gamepad.sThumbLY == sig.sThumbLY &&
+                    st.Gamepad.sThumbRX == sig.sThumbRX && st.Gamepad.sThumbRY == sig.sThumbRY)
+                    slot = (int)i;
+            }
+            if (slot < 0) Sleep(10);
+        }
+        if (slot < 0 || (pass == 1 && slot != found)) {
+            found = -1;
+            break;
+        }
+        found = slot;
+    }
+    vigem_send_neutral();
+    return found;
 }
 
 /* Blocks (deliberately -- remapping is a quick, one-off, before-the-game
@@ -4572,6 +4813,24 @@ static long i16_to_axis(SHORT v) {
 static long u8_to_axis(BYTE v) {
     double frac = v / 255.0;
     return AXIS_MIN + (long)(frac * (AXIS_MAX - AXIS_MIN) + 0.5);
+}
+
+/* Same neutral frame the main loop sends when vJoy gets muted -- used on
+   disconnect, before relinquishing, so whatever was held when the real
+   controller dropped doesn't stay latched on vJoy while nothing is
+   connected (the device itself stays present for the whole session). */
+static void vjoy_send_neutral(UINT rid) {
+    EnterCriticalSection(&g_output_lock);
+    if (g_vjoy_acquired) {
+        pSetAxis(i16_to_axis(0), rid, HID_USAGE_X);
+        pSetAxis(i16_to_axis(0), rid, HID_USAGE_Y);
+        pSetAxis(u8_to_axis(0), rid, HID_USAGE_Z);
+        pSetAxis(u8_to_axis(0), rid, HID_USAGE_RZ);
+        pSetAxis(i16_to_axis(0), rid, HID_USAGE_RX);
+        pSetAxis(i16_to_axis(0), rid, HID_USAGE_RY);
+        for (int b = 0; b < NUM_VJOY_BUTTONS; b++) pSetBtn(0, rid, (UCHAR)(b + 1));
+    }
+    LeaveCriticalSection(&g_output_lock);
 }
 
 /* Runs on its own OS-spawned thread the instant Ctrl+C is pressed, the
@@ -6399,6 +6658,7 @@ int main(int argc, char **argv) {
                                           confirmed visibly worse over Windows Sandbox's display */
         while (userIndex < 0 && backend == BACKEND_XINPUT) {
             for (DWORD i = 0; i < 4 && userIndex < 0; i++) {
+                if ((int)i == g_vigem_xinput_slot) continue; /* our own virtual pad -- see g_vigem_xinput_slot */
                 XINPUT_STATE st;
                 if (pXInputGetState(i, &st) == ERROR_SUCCESS) userIndex = (int)i;
             }
@@ -6543,20 +6803,36 @@ int main(int argc, char **argv) {
            -- and register_with_hidhide() itself now unhides any stale
            leftovers even on this failure path, so a timeout here can't
            leave some unrelated device wrongly hidden either (see its own
-           comment). */
+           comment).
+           Since 2026-10-01 the virtual pad stays present across a
+           reconnect (see g_vigem_xinput_slot's comment), so on every
+           connect after the first one it DOES already exist while this
+           runs -- find_real_controller_hidhide_path() now skips it by
+           device tree (instance_id_is_vigem_child()) instead of relying on
+           this ordering alone. */
         for (int attempt = 0; attempt < 15 && !g_hidhide_registered; attempt++) {
             g_hidhide_registered = register_with_hidhide();
             if (!g_hidhide_registered && attempt < 14) Sleep(300);
         }
-        /* Default the emulated output to match the real input: a
-           PlayStation-style controller detected -> emulate DS4 (so the
-           game shows the correct Cross/Circle/Square/Triangle prompts for
-           what's actually in hand); an Xbox-style one -> emulate X360.
-           Overridable live -- press V while the dashboard is showing. */
-        g_vigem_emulate_ds4 = (backend == BACKEND_DINPUT || backend == BACKEND_DS4_RAWHID ||
-                                 backend == BACKEND_DUALSENSE_RAWHID || backend == BACKEND_DS4_WIRED_RAWHID ||
-                                 backend == BACKEND_DUALSENSE_WIRED_RAWHID);
-        vigem_setup(backend, userIndex);
+        InterlockedExchange(&g_rumble_xinput_slot, backend == BACKEND_XINPUT ? userIndex : -1);
+        if (!g_vigem_target) {
+            /* Default the emulated output to match the real input: a
+               PlayStation-style controller detected -> emulate DS4 (so the
+               game shows the correct Cross/Circle/Square/Triangle prompts
+               for what's actually in hand); an Xbox-style one -> emulate
+               X360. Overridable live -- press V while the dashboard is
+               showing. Only decided for the session's first virtual pad: on
+               a reconnect the game is still holding the existing one, and
+               swapping it out from under the game is exactly what used to
+               force a game restart (V still switches it on purpose). */
+            g_vigem_emulate_ds4 = (backend == BACKEND_DINPUT || backend == BACKEND_DS4_RAWHID ||
+                                     backend == BACKEND_DUALSENSE_RAWHID || backend == BACKEND_DS4_WIRED_RAWHID ||
+                                     backend == BACKEND_DUALSENSE_WIRED_RAWHID);
+            vigem_setup();
+        } else {
+            log_line("vigem: reconnect -- keeping the same %s virtual pad the game already has",
+                      g_vigem_emulate_ds4 ? "ds4" : "x360");
+        }
         /* Immediate first read/color instead of waiting up to ~1s for the
            periodic poll below -- a friend shouldn't see "unknown"/no color
            for a whole second right after connecting. */
@@ -6898,7 +7174,7 @@ int main(int argc, char **argv) {
                        fast/clean, not a live-swap of anything fragile. */
                     vigem_teardown();
                     g_vigem_emulate_ds4 = !g_vigem_emulate_ds4;
-                    vigem_setup(backend, userIndex);
+                    vigem_setup();
                     update_ps_mode_led(); /* the real controller's identity (native PS vs standing in for
                                                Xbox) just changed -- reflect that on its own lightbar too */
                     clear_console();
@@ -6910,14 +7186,21 @@ int main(int argc, char **argv) {
         }
 
         if (backend == BACKEND_DINPUT && g_di_device) IDirectInputDevice8_Unacquire(g_di_device);
+        /* The rumble callbacks stay registered while nothing is connected
+           now (the virtual pad outlives the controller) -- point them at
+           "nothing" first, before any handle below gets closed. */
+        InterlockedExchange(&g_rumble_xinput_slot, -1);
         /* Reset regardless of backend: the wired case (owns_handle=1) gets
            explicitly closed here since it's a separate handle from
            g_di_device; the Bluetooth cases (owns_handle=0) just get their
            now-stale copy of the handle value cleared -- the actual
            CloseHandle for those happens via g_ds4_raw_handle/
-           g_dualsense_raw_handle's own cleanup right below, never both. */
-        if (g_ps_output_owns_handle && g_ps_output_handle != INVALID_HANDLE_VALUE) CloseHandle(g_ps_output_handle);
+           g_dualsense_raw_handle's own cleanup right below, never both.
+           Cleared before closing so a rumble callback can't pick up a
+           handle that's mid-close. */
+        HANDLE oldPsOutput = g_ps_output_handle;
         g_ps_output_handle = INVALID_HANDLE_VALUE;
+        if (g_ps_output_owns_handle && oldPsOutput != INVALID_HANDLE_VALUE) CloseHandle(oldPsOutput);
         g_ps_output_is_dualsense = 0;
         g_ps_output_is_bt = 0;
         g_ps_output_owns_handle = 0;
@@ -6944,7 +7227,36 @@ int main(int argc, char **argv) {
             CloseHandle(g_dualsense_raw_handle); /* same reasoning as g_ds4_raw_handle above */
             g_dualsense_raw_handle = INVALID_HANDLE_VALUE;
         }
-        vigem_teardown();
+        /* The virtual pad used to be torn down right here -- the root of
+           the 2026-10-01 bug (see g_vigem_xinput_slot's comment). Now it
+           just goes neutral and stays, so the game never loses it and the
+           wait loop can tell it apart from the real controller. The slot
+           is probed right here, not at setup: it's only needed by the scan
+           that starts next, and with the real controller gone nothing else
+           can be mistaken for the probe's signature. */
+        if (g_vigem_target && !g_vigem_emulate_ds4) {
+            g_vigem_xinput_slot = probe_vigem_xinput_slot();
+            log_line("vigem: x360 virtual pad probed on XInput slot %d (-1 = not found)", g_vigem_xinput_slot);
+        }
+        if (vigem_pad_can_outlive_controller()) {
+            vigem_send_neutral();
+            log_line("vigem: controller dropped -- %s virtual pad kept present (neutral) for the game",
+                      g_vigem_emulate_ds4 ? "ds4" : "x360");
+        } else if (g_vigem_target) {
+            /* Fallback, X360-type pad whose XInput slot the probe couldn't find:
+               nothing can tell it apart from a real pad on XInput, so it
+               can't stay. Tear it down like before, but also wait for its
+               slot to actually disappear (up to 2s) before the wait loop
+               starts scanning -- removal isn't instant, and a scan that
+               still sees the dying pad is exactly what latched onto it. */
+            int before = count_connected_xinput_slots();
+            vigem_teardown();
+            for (int waited = 0; before > 0 && waited < 2000 && count_connected_xinput_slots() >= before;
+                  waited += 50)
+                Sleep(50);
+            log_line("vigem: controller dropped -- virtual pad's slot unknown, torn down instead of kept");
+        }
+        vjoy_send_neutral(rid);
         relinquish_vjoy_if_acquired();
         restore_gamebar_guide_capture(); /* self-guarded/idempotent, safe to call even if this disconnect
                                               wasn't an Xbox controller or nothing was ever touched */

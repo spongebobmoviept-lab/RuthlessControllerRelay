@@ -11,7 +11,7 @@ Full rumble, lightbar/LED color, and battery reporting, wherever the hardware an
 [![Built with Zig](https://img.shields.io/badge/built%20with-zig%20cc-F7A41D?logo=zig&logoColor=white)](https://ziglang.org/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-[Quick start](#quick-start) · [Controls](#controls) · [Compatibility](#what-works-and-what-doesnt) · [Is this safe?](#is-this-safe-to-run) · [Building](#building-from-source) · [Development story](docs/DEVELOPMENT_JOURNEY.md) · [Credits](#credits)
+[Quick start](#quick-start) · [Controls](#controls) · [Coming next](#whats-coming-next) · [Compatibility](#what-works-and-what-doesnt) · [Is this safe?](#is-this-safe-to-run) · [Building](#building-from-source) · [Development story](docs/DEVELOPMENT_JOURNEY.md) · [Credits](#credits)
 
 </div>
 
@@ -80,6 +80,18 @@ For a plain-English "is this working right now" guide with no jargon, see the **
 Two separate Steam settings can each independently break this — see [Known Limitations](docs/KNOWN_LIMITATIONS.md#steam-input-must-be-disabled) if you use Steam.
 
 When the PS button (or touchpad) is configured as the toggle specifically, it's deliberately never also forwarded as a normal vJoy button at the same time — so it can't do double duty as both a mode-switch and a bound joystick action. (This doesn't apply to standard buttons like Back+Start, which keep working as ordinary vJoy buttons even while also serving as the toggle combo — unchanged, long-standing behavior.)
+
+## What's coming next
+
+Being built and tested right now. None of this is in a release yet.
+
+- **Hold-to-free-look in HOTAS mode.** For games that let you bind free look (Look Left/Right) to a joystick axis.
+  - **Hold RB:** the right stick's left/right turns the camera instead of rolling the aircraft. Up/down keeps flying pitch, and the left stick works as normal.
+  - **Let go:** the view snaps back to forward and the stick flies again right away.
+  - **Lock:** click R3 while holding RB and the camera stays put after you let go. Tap RB or click R3 to undo it.
+  - Still being tuned for smoothness and speed.
+- **Steadier virtual-joystick output.** The virtual joystick will send complete updates at a steady rate, the way a real joystick does, instead of only when the stick moves. Some games move the camera a little with each update, so without this, free look stalls whenever you hold the stick still.
+- **Push-to-talk on the controller side (Normal mode).** Up next.
 
 ## What works and what doesn't
 

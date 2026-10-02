@@ -217,6 +217,38 @@ One more real, separate wrinkle surfaced and was deliberately left unsolved by d
 
 **Verified on real hardware** with the same controller and dongle. After an off/on cycle, the relay picked the real controller back up: the dashboard showed the controller's real battery level, not "wired". The log showed the same virtual pad kept throughout, and the real controller re-registered with HidHide on the first attempt. A separate, non-whitelisted process (what a game sees) could see only the virtual pad, not the real controller. Then the real test: the controller turned off in the middle of an actual game session and was turned back on. The game kept working with no restart of anything.
 
+### Free look in HOTAS mode: three dead ends and what worked (v1.1.0)
+
+**The ask.** Flying with a gamepad in HOTAS mode left no way to look around. The goal was Arma-style "hold a button to free look": hold RB, and the right stick looks around instead of flying; let go, and the view snaps back.
+
+**Dead end 1: a joystick look axis.** The first version fed the right stick into two new virtual-joystick axes (Slider0/Slider1), bound to the game's Look Left/Right/Up/Down. In the game it was jumpy and slow, and the camera only moved while the stick was *moving*: "moves a little, gets stuck, I move it again, it moves further".
+- **That led to a real bug on our side.** Measured with a raw HID reader, the virtual joystick sent **zero reports per second while the stick was held still**, and up to about **8,300 per second while moving**. The relay only wrote on input changes, and each write was 24-26 separate per-field calls, each one its own half-updated report.
+- **That bug is fixed for good** (see "steadier output" below). But even with a capture-verified clean stream at 377, 1,000 and 2,000 reports per second, evenly spaced, with no gaps and no conflicting values, that game's joystick free look stayed glitchy. The relay's signal was clean, so the rest was inside the game.
+
+**Dead end 2: look buttons instead of an axis.** Pushing the stick past halfway held a "look left" or "look right" virtual button. It was also glitchy, and too slow at the game's fixed speed.
+
+**A limit, not a bug: that game's free look is world-locked.** The camera holds a compass heading while the aircraft turns, the same with every input device. Re-anchoring it to the aircraft would mean auto-tapping the game's reset button many times a second. That's an input macro, so it was rejected outright, the same as any other macro.
+
+**What worked: the game's own keyboard/mouse free look.** In that game, holding Left Alt and moving the mouse gives fast, smooth free look, and it works fine alongside joystick flying. So while RB is held, the relay:
+- holds Left Alt,
+- turns the right stick's left/right into relative mouse movement,
+- leaves up/down on pitch, because the user wanted to keep correcting while looking.
+
+**Design details:**
+- **Speed** comes from real elapsed time with sub-pixel carry, not from how often updates go out, so timing jitter can't change it.
+- **A small dead zone** on this one path stops a resting stick from creeping the camera.
+- **Left Alt is released on every way out:** letting go, switching modes, disconnecting, Ctrl+C, a fatal error, and the crash handler. A stuck Alt would break the whole keyboard.
+- **Nothing is installed**, so there's nothing to clean up.
+- It's the same kind of stick-to-mouse remap DS4Windows and Steam Input do, and it can be switched off per game (`freelook=off`).
+
+**Two smaller decisions:**
+- **Pitch/roll go to center while looking, not hold-last.** In a rate-controlled flight model, center means "keep the current attitude"; holding the last value would keep rolling the aircraft.
+- **The stick flies again instantly after letting go.** A first version waited for it to come back to center first, which was rejected: if you see a rocket and already have the stick pointed to dodge, it has to work right away.
+
+**Steadier output (kept from dead end 1, and good for everything).** Every write is now one complete `UpdateVJD()` report. The vJoy SDK's `JOYSTICK_POSITION_V2` was copied field-for-field from vJoy's real `public.h` and size-asserted, not guessed. A dedicated thread re-sends the latest report at a steady 1,000 per second, paced against absolute deadlines. A plain 1ms timer re-armed each tick only managed 678 per second.
+
+**Also learned:** the Xbox **Share** button can't be used as a relay button. Standard Xbox controller input has no Share at all. It only exists on the controller's raw HID side, and Windows only delivers that to the app in the foreground. A background reader got zero reports even for ordinary button presses.
+
 ## What works and what doesn't
 
 The full, plain-English breakdown — connection type by connection type, with a "why" for each real limitation — lives in two places:

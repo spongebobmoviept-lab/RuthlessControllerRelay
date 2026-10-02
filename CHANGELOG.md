@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.1.0 — 2026-10-02
+
+### Added
+- **Free look in HOTAS mode.** Hold RB and the right stick's left/right turns the camera, while up/down keeps flying pitch. Let go and the camera snaps back; the stick flies again instantly.
+  - **Lock:** RB + click R3 keeps the camera where it is after you let go. Tap RB or click R3 to unlock.
+  - **Speed:** change it live with `+` / `-` on the dashboard. It's saved as `freelook_speed=` in the ini.
+  - **Off switch:** works through the game's own Left Alt + mouse free look. Turn it off with `freelook=off` in the ini for games where that isn't free look.
+  - Details: [README](README.md#free-look-hotas-mode).
+- **A tiny dead zone on the virtual gamepad's sticks (Normal mode only, about 3%).** Some hall-effect sticks wobble a hair off center, and games with no dead-zone setting of their own show that as drift. It's scaled, so the stick still starts smoothly from zero and still reaches full deflection. HOTAS mode is unchanged and still passes the stick through untouched.
+- **The dashboard shows a loud banner while you're in free look** (yellow) or have the camera locked (magenta).
+
+### Changed
+- **Steadier virtual-joystick output.** Every update now goes to the virtual joystick as one complete report, re-sent at a steady 1,000 per second like a real joystick, even when nothing moves. Before, it only sent anything when the stick moved, and each change arrived as about 25 half-finished pieces. Some games act on each report as it arrives, and those saw stutter while moving and stalls when the stick was held still.
+- **The virtual joystick now declares two extra slider axes and 20 buttons.** Existing bindings keep working, because the axis and button numbers that were already there didn't move. Some games remember joystick bindings in odd ways, so it's worth a quick check after updating.
+
+How free look ended up working this way, including the approaches that didn't: [docs/DEVELOPMENT_JOURNEY.md](docs/DEVELOPMENT_JOURNEY.md#free-look-in-hotas-mode-three-dead-ends-and-what-worked-v110).
+
 ## v1.0.1 — 2026-10-01
 
 **Bug-fix release. Everyone on v1.0.0 should update.**

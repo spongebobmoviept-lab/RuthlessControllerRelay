@@ -17,7 +17,7 @@ Full rumble, lightbar/LED color, and battery reporting, wherever the hardware an
 
 ---
 
-> **⚠️ On v1.0.0? Update to [v1.0.1](../../releases/tag/v1.0.1).** In v1.0.0, if your controller turns off or falls asleep while the relay is running, the relay can lock onto its own virtual controller. Input stops, your real controller can become visible to the game, and the only fix is restarting both. The version is shown at the top of the relay window; v1.0.0 shows no number there. [What went wrong](docs/DEVELOPMENT_JOURNEY.md#a-sleeping-controller-made-the-relay-read-its-own-virtual-pad-fixed-in-v101) · [Changelog](CHANGELOG.md)
+> **⚠️ On v1.0.0? Update to the [latest release](../../releases/latest).** In v1.0.0, if your controller turns off or falls asleep while the relay is running, the relay can lock onto its own virtual controller. Input stops, your real controller can become visible to the game, and the only fix is restarting both. The version is shown at the top of the relay window; v1.0.0 shows no number there. [What went wrong](docs/DEVELOPMENT_JOURNEY.md#a-sleeping-controller-made-the-relay-read-its-own-virtual-pad-fixed-in-v101) · [Changelog](CHANGELOG.md)
 
 > **⚠️ Using Steam? Disable Steam Input for the game first** — it bypasses this software entirely otherwise. Details: [Known Limitations](docs/KNOWN_LIMITATIONS.md#steam-input-must-be-disabled).
 
@@ -74,6 +74,22 @@ For a plain-English "is this working right now" guide with no jargon, see the **
 | `R` | Change the hotkey/button combo for the mode switch above |
 | `M` | Remap a button |
 | `G` | Pick/launch a game |
+| Hold `RB` <br/><sub>(HOTAS mode)</sub> | Free look: the right stick's left/right turns the camera. Let go and the view snaps back. See [Free look](#free-look-hotas-mode) |
+| `RB` + click `R3` | Lock the camera where it's looking; tap `RB` or click `R3` to unlock |
+| `+` / `-` | Free-look turning speed (saved automatically) |
+
+### Free look (HOTAS mode)
+
+New in v1.1.0. While you hold **RB** in HOTAS mode:
+- the right stick's **left/right turns the camera** instead of rolling the aircraft,
+- **up/down keeps flying pitch**, and the left stick works as normal, so you can keep making corrections while you look around,
+- **letting go** snaps the camera back, and the stick flies again instantly, wherever it's pointing.
+
+**Lock:** hold RB and click **R3** to keep the camera parked where it is after you let go. Tap **RB** or click **R3** to unlock. The dashboard banner turns yellow while you're looking and magenta while the camera is locked.
+
+How it works: the relay holds **Left Alt** and turns the stick into **mouse movement**, which drives the game's own Alt + mouse free look. That only fits games where holding Left Alt and moving the mouse is free look. For any other game, set `freelook=off` in `ruthless_controller_relay.ini` and RB goes back to being an ordinary button. The speed lives in the same file as `freelook_speed=`, or change it live with `+` / `-`.
+
+This is software-generated keyboard and mouse input, the same kind of stick-to-mouse remap DS4Windows and Steam Input do. Left Alt is always released when you let go, switch modes, disconnect, or close the relay, including after a crash.
 
 **The controller-side default depends on what's plugged in the first time you ever run it**: a PlayStation controller defaults to the PS button alone, and an Xbox controller defaults to the **Guide/Xbox-logo button** — confirmed working on real hardware, including through the official Xbox Wireless Adapter dongle. Neither button ever reaches whatever the game sees, so it can't collide with anything the game itself does. This is decided once, the very first time a controller connects on a fresh install, and never overwritten afterward — change it any time with `R`, or by hand-editing `button=` in `ruthless_controller_relay.ini` (e.g. `button=back+start` for the classic combo instead). Full story, including why the newer Share button doesn't get the same treatment, in [Known Limitations](docs/KNOWN_LIMITATIONS.md#the-xboxguide-button--solved-and-confirmed-on-real-hardware).
 
@@ -83,15 +99,9 @@ When the PS button (or touchpad) is configured as the toggle specifically, it's 
 
 ## What's coming next
 
-Being built and tested right now. None of this is in a release yet.
-
-- **Hold-to-free-look in HOTAS mode.** For games that let you bind free look (Look Left/Right) to a joystick axis.
-  - **Hold RB:** the right stick's left/right turns the camera instead of rolling the aircraft. Up/down keeps flying pitch, and the left stick works as normal.
-  - **Let go:** the view snaps back to forward and the stick flies again right away.
-  - **Lock:** click R3 while holding RB and the camera stays put after you let go. Tap RB or click R3 to undo it.
-  - Still being tuned for smoothness and speed.
-- **Steadier virtual-joystick output.** The virtual joystick will send complete updates at a steady rate, the way a real joystick does, instead of only when the stick moves. Some games move the camera a little with each update, so without this, free look stalls whenever you hold the stick still.
 - **Push-to-talk on the controller side (Normal mode).** Up next.
+
+Free look in HOTAS mode and the steadier virtual-joystick output, listed here before, shipped in [v1.1.0](CHANGELOG.md).
 
 ## What works and what doesn't
 

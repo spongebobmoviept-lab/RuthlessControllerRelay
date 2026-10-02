@@ -87,6 +87,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <ctype.h>
+#include <math.h>
 #include "vigem_client/ViGEm/Client.h"
 #define DIRECTINPUT_VERSION 0x0800
 #define COBJMACROS
@@ -98,7 +99,7 @@
    release that fixed a bug serious enough that people needed to know
    whether they still had the old build (see CHANGELOG.md). Bump this with
    every GitHub release. */
-#define RELAY_VERSION "1.0.1"
+#define RELAY_VERSION "1.1.0"
 
 #define HIDHIDE_CLI "\"C:\\Program Files\\Nefarius Software Solutions\\HidHide\\x64\\HidHideCLI.exe\""
 #define TOGGLE_HOTKEY_ID 1
@@ -487,8 +488,13 @@ static int g_guide_pressed = 0;
    PS button and touchpad click. Touching this means also touching
    VJOY_HID_REPORT_DESCRIPTOR's button usage-max/report-count further
    down, since vJoy's own driver doesn't know how many buttons a device
-   has until that descriptor tells it. */
+   has until that descriptor tells it.
+   2026-10-01: the descriptor now declares VJOY_DESCRIPTOR_BUTTONS (20) --
+   these 18 mapped ones plus two the relay drives itself for the RB free
+   look's look-left/look-right buttons (FREELOOK_LEFT_VJOY_BTN/RIGHT),
+   which no physical button maps to. */
 #define NUM_VJOY_BUTTONS 18
+#define VJOY_DESCRIPTOR_BUTTONS 20
 
 /* Which physical input drives each vJoy button 1-NUM_VJOY_BUTTONS -- index
    0 is vJoy button 1, etc. Defaults match the original fixed A=1/B=2/.../trigger
@@ -1011,6 +1017,109 @@ static int register_with_hidhide(void) {
    shelling out to HidHideCLI every frame. */
 static volatile LONG g_hidden_mode = -1;
 
+/* RB free look, HOTAS mode only (user request 2026-10-01, modeled on
+   Arma's hold-to-free-look): while this button is held, the right stick
+   stops flying the aircraft and drives two extra vJoy axes instead
+   (Slider0 = look left/right, Slider1 = look up/down -- bind them to
+   WARDOGS's Look Left/Right/Up/Down). Pitch/roll go to CENTER while
+   looking, not hold-last: WARDOGS's stick commands rotation rate, so
+   center means "stop rotating, keep the current attitude", while
+   hold-last would keep rolling the aircraft the whole time you look
+   around. The left stick (yaw/collective) keeps working throughout.
+   Letting go taps the button's own vJoy button once (WARDOGS's Free Look
+   Reset is bound to it), so the view snaps back like Arma's. The button
+   is never forwarded as a held press while it's the modifier, since a
+   held reset would keep pinning the camera to center. Both edges take
+   effect instantly, by explicit user request: pressing the button with
+   the stick already pushed looks there immediately, and letting go hands
+   the stick straight back to pitch/roll wherever it's pointing -- "if I
+   see a rocket and I have the stick pre-pointed, I want it to work right
+   away". (A first draft held pitch/roll at center after letting go until
+   the stick came back near the middle; rejected for exactly that reason.)
+   Normal mode and mode-unknown: the button is an ordinary button,
+   nothing here applies.
+   LOCK (user request, same day): clicking R3 while holding the button
+   arms a lock -- letting go then skips the reset tap, so the camera stays
+   where it's looking while the right stick flies again (WARDOGS's free
+   look holds a world heading, not one relative to the helicopter -- the
+   game's own design, every input type, nothing the relay can change; the
+   only workaround, auto-tapping reset many times a second, is an input
+   macro and was explicitly rejected). R3 again while still holding
+   cancels the lock. Undoing it once locked, both ways on purpose so it's
+   easy to get out of if forgotten: tap the button (a new look that
+   resets on release, like any other), or click R3 on its own (resets
+   immediately). R3 is swallowed -- never sent to the game -- whenever it
+   does one of these, held until released, so it can't also fire whatever
+   R3 is bound to (Ping).
+   Same idea as the old Python prototype (_archive_old_prototypes/
+   hotas_bridge.py), which had the RB-held Slider0/Slider1 part. The
+   reset tap and lock are new. Hardcoded to RB/R3 for this test build --
+   make them ini settings before it ships. */
+#define FREELOOK_MODIFIER_PHYS XINPUT_GAMEPAD_RIGHT_SHOULDER
+#define FREELOOK_LOCK_PHYS XINPUT_GAMEPAD_RIGHT_THUMB
+#define FREELOOK_RESET_PULSE_MS 100 /* long enough for any game polling at >= 10fps to see the tap */
+/* BUTTONS INSTEAD OF AN AXIS (fourth real-hardware round, same day, the
+   user's own idea -- "maybe a button push instead of axis binding?"): even
+   with a capture-verified clean, steady stream at 377, 1000 and 2000
+   reports/sec, WARDOGS's joystick-AXIS free look stayed "super glitchy" --
+   that's inside the game, nothing more on the wire fixes it. So while
+   looking, pushing the right stick past FREELOOK_BTN_ON left/right holds
+   down a plain vJoy button instead (FREELOOK_LEFT/RIGHT_VJOY_BTN, bind them
+   to WARDOGS's Look Left / Look Right), released below FREELOOK_BTN_OFF
+   (hysteresis, so a stick resting right at the edge can't flicker it).
+   Buttons are held state, so the game should pan at its own steady
+   speed -- the trade is losing analog speed control. Slider0 stays centered
+   in this mode (also keeps WARDOGS's bind screen from grabbing the axis
+   instead of the button). FREELOOK_USE_BUTTONS 0 restores the axis. */
+#define FREELOOK_USE_BUTTONS 0
+#define FREELOOK_LEFT_VJOY_BTN 19   /* 1-based vJoy button; WARDOGS shows it as "Button 18" (0-based) */
+#define FREELOOK_RIGHT_VJOY_BTN 20  /* WARDOGS: "Button 19" */
+#define FREELOOK_BTN_ON 16000       /* ~50% stick deflection presses it */
+#define FREELOOK_BTN_OFF 12000      /* ~37% releases it */
+/* MOUSE MODE (fifth round, same day, the user's idea again): the buttons
+   were glitchy too, but the game's own keyboard/mouse free look -- hold
+   Left Alt, move the mouse -- is "super fast" and smooth, and works fine
+   alongside joystick flying. So while RB is held this holds Left Alt and
+   turns the right stick's left/right into relative mouse movement
+   (SendInput), the same kind of stick-to-mouse remap DS4Windows and Steam
+   Input do -- the user's call after the anti-cheat question was raised.
+   Mouse deltas add up to distance no matter how many arrive per frame, so
+   speed is computed from real elapsed time (QPC) with sub-pixel carry,
+   not from the send rate: steady regardless of timing jitter. Linear past
+   a small deadzone (a stick resting slightly off center would otherwise
+   creep the camera -- the one place a deadzone is unavoidable). Letting go
+   of RB releases Alt, which is what returns the game's camera; the R3
+   lock keeps Alt held instead, until RB is tapped or R3 clicked. Alt is
+   released on every way out: mode switch, disconnect, Ctrl+C, crash exit
+   -- a stuck Alt would break the whole keyboard system-wide. Speed is
+   adjustable live with + / - on the dashboard. Overrides
+   FREELOOK_USE_BUTTONS and the Slider0 axis when on. */
+#define FREELOOK_USE_MOUSE 1
+#define FREELOOK_MOUSE_DEADZONE 2600 /* ~8% of the stick's range */
+#define FREELOOK_ALT_SCANCODE 0x38   /* Left Alt -- sent as a scan code so raw-input/DirectInput games see it too */
+static volatile LONG g_freelook_mouse_speed = 9138; /* mouse counts/sec at full deflection -- + / - on the dashboard, saved as freelook_speed= in the ini; default is the speed the user settled on in real play */
+static volatile LONG g_freelook_enabled = 1;        /* freelook= in the ini -- off makes RB an ordinary button again, for games where Left Alt + mouse is not free look */
+static volatile LONG g_freelook_mouse_x = 0;        /* right stick X while looking, 0 otherwise -- the pump reads this */
+static volatile LONG g_freelook_alt_held = 0;
+
+static void freelook_send_alt(int down) {
+    INPUT in;
+    memset(&in, 0, sizeof(in));
+    in.type = INPUT_KEYBOARD;
+    in.ki.wScan = FREELOOK_ALT_SCANCODE;
+    in.ki.dwFlags = KEYEVENTF_SCANCODE | (down ? 0 : KEYEVENTF_KEYUP);
+    SendInput(1, &in, sizeof(in));
+}
+
+/* Idempotent, safe from any thread -- called from every exit path. */
+static void freelook_release_alt(void) {
+    InterlockedExchange(&g_freelook_mouse_x, 0);
+    if (InterlockedExchange(&g_freelook_alt_held, 0)) freelook_send_alt(0);
+}
+/* For the dashboard banner only; the main loop owns the real state. */
+enum { FREELOOK_OFF = 0, FREELOOK_LOOKING, FREELOOK_LOOKING_LOCK_ARMED, FREELOOK_LOCKED };
+static volatile LONG g_freelook_state = FREELOOK_OFF;
+
 /* Shared by both trigger paths: the Ctrl+Alt+H hotkey and an R3 (right
    stick click) press detected in the main relay loop. Pure in-memory
    state flip now -- no HidHide calls at all, since cloaking itself is no
@@ -1376,6 +1485,7 @@ static DWORD WINAPI crash_logger_thread(LPVOID arg) {
 }
 
 static LONG WINAPI crash_filter(EXCEPTION_POINTERS *ep) {
+    freelook_release_alt(); /* first, before anything that could hang -- a stuck Alt breaks the whole keyboard */
     g_crash_info.exceptionCode = ep->ExceptionRecord->ExceptionCode;
     g_crash_info.exceptionAddress = ep->ExceptionRecord->ExceptionAddress;
     g_crash_info.threadId = GetCurrentThreadId();
@@ -1517,6 +1627,22 @@ static void save_config(UINT mods, UINT vk, DWORD button_mask, DWORD hold_ms, co
     for (int i = 0; i < NUM_VJOY_BUTTONS; i++) {
         fprintf(out, "%s%s", ini_name_for_phys(g_button_map[i]), i < NUM_VJOY_BUTTONS - 1 ? "," : "\n");
     }
+    fprintf(out,
+        "#\n"
+        "# freelook: on or off. HOTAS mode only. Hold RB to free look: the right\n"
+        "# stick's left/right turns the camera (this holds Left Alt and moves the\n"
+        "# mouse -- the game's own Alt + mouse free look), up/down keeps flying\n"
+        "# pitch, and letting go snaps the camera back. Hold RB and click R3 to\n"
+        "# lock the camera where it is; tap RB or click R3 to unlock. Set to off\n"
+        "# for a game where Left Alt + mouse isn't free look -- RB is then an\n"
+        "# ordinary button again.\n"
+        "freelook=%s\n"
+        "#\n"
+        "# freelook_speed: camera turn speed at full stick (mouse counts per\n"
+        "# second). Change it live with + and - while the dashboard is showing --\n"
+        "# saved here automatically.\n"
+        "freelook_speed=%ld\n",
+        g_freelook_enabled ? "on" : "off", (long)g_freelook_mouse_speed);
     fclose(out);
 }
 
@@ -1588,6 +1714,19 @@ static void load_config(UINT *mods_out, UINT *vk_out, DWORD *button_mask_out, DW
                 fprintf(stderr, "Warning: couldn't parse buttonmap= line in %s, using the default layout.\n",
                         HOTKEY_CONFIG_FILE);
             }
+        } else if (!strncmp(p, "freelook=", 9)) {
+            char v[16] = {0};
+            strncpy(v, p + 9, sizeof(v) - 1);
+            for (char *c = v; *c; c++) *c = (char)tolower((unsigned char)*c);
+            if (!strncmp(v, "off", 3) || v[0] == '0' || !strncmp(v, "false", 5) || !strncmp(v, "no", 2))
+                InterlockedExchange(&g_freelook_enabled, 0);
+            else
+                InterlockedExchange(&g_freelook_enabled, 1);
+        } else if (!strncmp(p, "freelook_speed=", 15)) {
+            long s = atol(p + 15);
+            if (s >= 200 && s <= 40000) InterlockedExchange(&g_freelook_mouse_speed, s);
+            else fprintf(stderr, "Warning: freelook_speed= in %s should be 200-40000, keeping %ld.\n",
+                          HOTKEY_CONFIG_FILE, (long)g_freelook_mouse_speed);
         }
     }
     fclose(f);
@@ -1660,6 +1799,11 @@ static DWORD WINAPI toggle_thread(LPVOID arg) {
 #define CLR_BANNER_NORMAL \
     (BACKGROUND_RED | BACKGROUND_GREEN | FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY)
 #define CLR_BANNER_UNKNOWN (BACKGROUND_RED | FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY)
+/* RB free look banners -- deliberately loud, nothing else on the dashboard uses these */
+#define CLR_BANNER_LOOK (BACKGROUND_RED | BACKGROUND_GREEN | BACKGROUND_INTENSITY) /* black on bright yellow */
+#define CLR_BANNER_LOCKED \
+    (BACKGROUND_RED | BACKGROUND_BLUE | BACKGROUND_INTENSITY | FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | \
+     FOREGROUND_INTENSITY) /* white on bright magenta */
 
 static HANDLE g_console;
 
@@ -1937,7 +2081,11 @@ static void render_waiting_screen(UINT rid, int was_ever_connected) {
    past however many rows are ACTUALLY visible is what forces the
    terminal to auto-scroll every redraw; below, this is checked BEFORE
    drawing anything so that can't happen regardless of window height. */
+#ifdef RCR_OBS_REMINDER
+#define DASHBOARD_ROWS_NEEDED 40 /* +1 for the personal-build OBS hotkey reminder line */
+#else
 #define DASHBOARD_ROWS_NEEDED 39
+#endif
 
 /* Explicit user request 2026-09-09, "some ascii art... free right?" -- a
    small bordered badge, plain ASCII only (no Unicode block-drawing: this
@@ -2024,10 +2172,20 @@ static void render_dashboard(const XINPUT_GAMEPAD *gp, double updates_per_sec, U
        ViGEmBus gamepad in Normal mode -- never whether the hardware itself
        is hidden. */
     LONG mode = g_hidden_mode;
-    WORD banner_clr = mode == 1 ? CLR_BANNER_HOTAS : mode == 0 ? CLR_BANNER_NORMAL : CLR_BANNER_UNKNOWN;
-    const char *mode_str = mode == 1   ? " HOTAS MODE -- vJoy is live (game sees only the virtual stick)        "
-                            : mode == 0 ? " NORMAL MODE -- virtual gamepad is live (game sees only that)         "
-                                        : " MODE UNKNOWN -- press Ctrl+Alt+H once to set it                      ";
+    LONG look = mode == 1 ? g_freelook_state : FREELOOK_OFF;
+    WORD banner_clr = look == FREELOOK_LOCKED                                         ? CLR_BANNER_LOCKED
+                      : look == FREELOOK_LOOKING || look == FREELOOK_LOOKING_LOCK_ARMED ? CLR_BANNER_LOOK
+                      : mode == 1                                                      ? CLR_BANNER_HOTAS
+                      : mode == 0                                                      ? CLR_BANNER_NORMAL
+                                                                                       : CLR_BANNER_UNKNOWN;
+    const char *mode_str =
+        look == FREELOOK_LOCKED              ? " >>> CAMERA LOCKED <<<  tap RB or click R3 to unlock + snap back      "
+        : look == FREELOOK_LOOKING_LOCK_ARMED ? " >>> FREE LOOK + LOCK <<<  let go of RB: camera stays (R3 = cancel)   "
+        : look == FREELOOK_LOOKING            ? " >>> FREE LOOK <<<  let go of RB = snap back, click R3 = lock         "
+        : mode == 1                           ? (g_freelook_enabled ? " HOTAS MODE -- vJoy is live (hold RB to free look)                    "
+                                                                : " HOTAS MODE -- vJoy is live (game sees only the virtual stick)        ")
+        : mode == 0                           ? " NORMAL MODE -- virtual gamepad is live (game sees only that)         "
+                                              : " MODE UNKNOWN -- press Ctrl+Alt+H once to set it                      ";
 
     set_color(CLR_WHITE_BR);
     printf("=== Ruthless Controller Relay v" RELAY_VERSION " -- vJoy device #%u ===   \n", rid);
@@ -2087,7 +2245,15 @@ static void render_dashboard(const XINPUT_GAMEPAD *gp, double updates_per_sec, U
     set_color(CLR_GREEN_BR);
     printf(" READY -- controller connected, you can start your game now.          \n\n");
     set_color(banner_clr);
-    printf("%s\n", mode_str);
+    if (FREELOOK_USE_MOUSE && g_freelook_enabled && mode == 1 && look == FREELOOK_OFF) {
+        /* HOTAS banner shows the live mouse free-look speed (+ / - to change) -- same 70-column width */
+        char speed_banner[80];
+        snprintf(speed_banner, sizeof(speed_banner), " HOTAS MODE -- hold RB = free look   look speed %ld (+/- to change)",
+                  (long)g_freelook_mouse_speed);
+        printf("%-70s\n", speed_banner);
+    } else {
+        printf("%s\n", mode_str);
+    }
     set_color(CLR_NORMAL);
     char hk[32], btn[48];
     format_hotkey(hk, sizeof(hk), g_hotkey_mods, g_hotkey_vk);
@@ -2159,6 +2325,14 @@ static void render_dashboard(const XINPUT_GAMEPAD *gp, double updates_per_sec, U
         printf("                                                                       \n");
     }
     printf("Press Ctrl+C to stop.                                              \n");
+#ifdef RCR_OBS_REMINDER
+    /* Personal build only (-DRCR_OBS_REMINDER): the dev's own OBS is set up with these hotkeys
+       (F12 = save the last 3 minutes as a clip AND drop a chapter marker if recording). Public
+       release builds leave it out -- nobody else's OBS has these bindings. */
+    set_color(CLR_YELLOW_BR);
+    printf("OBS: F12 = save clip + marker    Ctrl+Shift+F11 = start/stop recording\n");
+    set_color(CLR_NORMAL);
+#endif
 
     /* Explicit user request 2026-09-09, "some ascii art... free right?" --
        a small bordered badge (plain ASCII only, no Unicode block art: this
@@ -4254,7 +4428,34 @@ static int count_connected_xinput_slots(void) {
    from every other app for the entire time it's connected, in BOTH
    modes (see register_with_hidhide()'s comment). This flag only ever
    picks which VIRTUAL device gets real data. */
-static void vigem_update(const XINPUT_GAMEPAD *gp) {
+/* Tiny scaled radial dead zone, virtual gamepad (Normal mode) ONLY --
+   user report 2026-10-02: the hall-effect sticks "sometimes just barely
+   move out" in Normal mode, while HOTAS mode is "perfect" (WARDOGS applies
+   its own per-axis joystick dead zones there; its gamepad side has no
+   dead-zone setting at all -- checked its config file). So vJoy stays raw
+   1:1 and untouched; only the virtual pad's sticks get this. Radial (both
+   axes together, so diagonals aren't squashed) and scaled (the stick
+   starts moving from 0 right past the edge and still reaches full
+   deflection), not a hard cut. */
+#define NORMAL_MODE_STICK_DEADZONE 1000 /* ~3% of the stick's range */
+static void stick_radial_deadzone(SHORT *x, SHORT *y) {
+    double fx = *x, fy = *y;
+    double mag = sqrt(fx * fx + fy * fy);
+    if (mag <= NORMAL_MODE_STICK_DEADZONE) {
+        *x = *y = 0;
+        return;
+    }
+    double scale = (mag - NORMAL_MODE_STICK_DEADZONE) / (32767.0 - NORMAL_MODE_STICK_DEADZONE) * 32767.0 / mag;
+    double nx = fx * scale, ny = fy * scale;
+    *x = (SHORT)(nx > 32767 ? 32767 : nx < -32768 ? -32768 : nx);
+    *y = (SHORT)(ny > 32767 ? 32767 : ny < -32768 ? -32768 : ny);
+}
+
+static void vigem_update(const XINPUT_GAMEPAD *gp_raw) {
+    XINPUT_GAMEPAD gp_dz = *gp_raw;
+    stick_radial_deadzone(&gp_dz.sThumbLX, &gp_dz.sThumbLY);
+    stick_radial_deadzone(&gp_dz.sThumbRX, &gp_dz.sThumbRY);
+    const XINPUT_GAMEPAD *gp = &gp_dz;
     /* Locked for the same reason as vigem_teardown() (see g_output_lock's
        comment): without this, console_ctrl_handler() freeing g_vigem_
        target/g_vigem_client on its own thread could race a still-in-
@@ -4728,6 +4929,8 @@ static char check_console_keypress(void) {
 #define HID_USAGE_RX 0x33u
 #define HID_USAGE_RY 0x34u
 #define HID_USAGE_RZ 0x35u
+#define HID_USAGE_SL0 0x36u /* Slider0 -- free-look yaw, see FREELOOK_MODIFIER_PHYS */
+#define HID_USAGE_SL1 0x37u /* Slider1 -- free-look pitch */
 
 #define AXIS_MIN 1L
 #define AXIS_MAX 32768L
@@ -4743,6 +4946,26 @@ static AcquireVJD_t pAcquireVJD;
 static RelinquishVJD_t pRelinquishVJD;
 static SetAxis_t pSetAxis;
 static SetBtn_t pSetBtn;
+
+/* vJoy SDK's JOYSTICK_POSITION_V2, copied field-for-field from the real
+   header (SDK/inc/public.h, identical in shauleiz/vJoy and the
+   jshafer817/vJoy 2.1.9 fork this project bundles), not guessed -- no
+   #pragma pack there, so default alignment (3 padding bytes after
+   bDevice). vJoyInterface's UpdateVJD() copies sizeof() of the real struct
+   out of this, so the size is asserted below. */
+typedef struct {
+    BYTE bDevice;
+    LONG wThrottle, wRudder, wAileron;
+    LONG wAxisX, wAxisY, wAxisZ, wAxisXRot, wAxisYRot, wAxisZRot;
+    LONG wSlider, wDial, wWheel;
+    LONG wAxisVX, wAxisVY, wAxisVZ, wAxisVBRX, wAxisVBRY, wAxisVBRZ;
+    LONG lButtons; /* bit 0 = button 1 */
+    DWORD bHats, bHatsEx1, bHatsEx2, bHatsEx3;
+    LONG lButtonsEx1, lButtonsEx2, lButtonsEx3;
+} VjoyPosition;
+_Static_assert(sizeof(VjoyPosition) == 108, "must match vJoy SDK's JOYSTICK_POSITION_V2");
+typedef BOOL(__stdcall *UpdateVJD_t)(UINT, PVOID);
+static UpdateVJD_t pUpdateVJD; /* optional -- vjoy_send_position() falls back to per-field writes without it */
 
 /* Single, lock-guarded place vJoy gets relinquished from -- used by
    console_ctrl_handler(), fatal_exit(), and the main loop's own
@@ -4794,6 +5017,7 @@ static HMODULE load_vjoy(void) {
     pRelinquishVJD = (RelinquishVJD_t)GetProcAddress(h, "RelinquishVJD");
     pSetAxis = (SetAxis_t)GetProcAddress(h, "SetAxis");
     pSetBtn = (SetBtn_t)GetProcAddress(h, "SetBtn");
+    pUpdateVJD = (UpdateVJD_t)GetProcAddress(h, "UpdateVJD");
     if (!pvJoyEnabled || !pAcquireVJD || !pRelinquishVJD || !pSetAxis || !pSetBtn) {
         fprintf(stderr, "vJoyInterface.dll loaded but missing an expected export.\n");
         return NULL;
@@ -4815,6 +5039,48 @@ static long u8_to_axis(BYTE v) {
     return AXIS_MIN + (long)(frac * (AXIS_MAX - AXIS_MIN) + 0.5);
 }
 
+/* REAL BUG found 2026-10-01 on real hardware, while testing the RB free
+   look: the camera only moved while the stick was MOVING -- "moves a
+   little, gets stuck, I move it again, it moves further", stuttering and
+   shaking, while the same game's normal gamepad free look was fast and
+   smooth. Measured from outside: vJoy only sends the game a report when
+   this relay writes to it, and this relay only wrote on input changes --
+   0 reports/sec with the stick held still -- but every write was 24-26
+   separate SetAxis/SetBtn calls, each its own report (up to ~8,300
+   reports/sec while moving, most of them half-updated). WARDOGS's look
+   axes evidently act on reports as they arrive (flight axes are
+   apparently fine with it, the user never noticed anything there). A real
+   joystick sends whole reports at a steady rate whether or not anything
+   changed, so now this does too: one UpdateVJD() call = one complete
+   report, re-sent by vjoy_pump_thread() even when nothing changed. Falls
+   back to the old per-field writes if the DLL somehow lacks UpdateVJD.
+   Callers hold g_output_lock. */
+static void vjoy_send_position(UINT rid, VjoyPosition *pos) {
+    if (pUpdateVJD) {
+        pUpdateVJD(rid, pos); /* sets pos->bDevice itself */
+        return;
+    }
+    pSetAxis(pos->wAxisX, rid, HID_USAGE_X);
+    pSetAxis(pos->wAxisY, rid, HID_USAGE_Y);
+    pSetAxis(pos->wAxisZ, rid, HID_USAGE_Z);
+    pSetAxis(pos->wAxisZRot, rid, HID_USAGE_RZ);
+    pSetAxis(pos->wAxisXRot, rid, HID_USAGE_RX);
+    pSetAxis(pos->wAxisYRot, rid, HID_USAGE_RY);
+    pSetAxis(pos->wSlider, rid, HID_USAGE_SL0);
+    pSetAxis(pos->wDial, rid, HID_USAGE_SL1);
+    for (int b = 0; b < VJOY_DESCRIPTOR_BUTTONS; b++) pSetBtn((pos->lButtons >> b) & 1, rid, (UCHAR)(b + 1));
+}
+
+/* Centered sticks, released triggers, no buttons -- what a muted or
+   disconnected vJoy should show. */
+static void vjoy_neutral_position(VjoyPosition *pos) {
+    memset(pos, 0, sizeof(*pos));
+    pos->wAxisX = pos->wAxisY = pos->wAxisXRot = pos->wAxisYRot = i16_to_axis(0);
+    pos->wSlider = pos->wDial = i16_to_axis(0);
+    pos->wAxisZ = pos->wAxisZRot = u8_to_axis(0);
+    pos->bHats = pos->bHatsEx1 = pos->bHatsEx2 = pos->bHatsEx3 = 0xFFFFFFFFu; /* "centered", like vJoy's own reset */
+}
+
 /* Same neutral frame the main loop sends when vJoy gets muted -- used on
    disconnect, before relinquishing, so whatever was held when the real
    controller dropped doesn't stay latched on vJoy while nothing is
@@ -4822,15 +5088,133 @@ static long u8_to_axis(BYTE v) {
 static void vjoy_send_neutral(UINT rid) {
     EnterCriticalSection(&g_output_lock);
     if (g_vjoy_acquired) {
-        pSetAxis(i16_to_axis(0), rid, HID_USAGE_X);
-        pSetAxis(i16_to_axis(0), rid, HID_USAGE_Y);
-        pSetAxis(u8_to_axis(0), rid, HID_USAGE_Z);
-        pSetAxis(u8_to_axis(0), rid, HID_USAGE_RZ);
-        pSetAxis(i16_to_axis(0), rid, HID_USAGE_RX);
-        pSetAxis(i16_to_axis(0), rid, HID_USAGE_RY);
-        for (int b = 0; b < NUM_VJOY_BUTTONS; b++) pSetBtn(0, rid, (UCHAR)(b + 1));
+        VjoyPosition pos;
+        vjoy_neutral_position(&pos);
+        vjoy_send_position(rid, &pos);
     }
     LeaveCriticalSection(&g_output_lock);
+}
+
+/* The steady stream itself, on its own thread. Second real-hardware round,
+   same day: re-sending from the main loop only managed ~377 reports/sec
+   (the loop is paced by XInputGetState itself, ~2.6ms per call for this
+   GIP dongle), and the user still found the look "very jumpy, not smooth
+   or fast at all -- over 20 seconds to look directly back". That fits
+   WARDOGS adding up look input per report it receives: a rate that isn't
+   a clean multiple of the game's frame rate gives some frames 2 reports
+   and some 3 (judder), and fewer reports = slower turning. So this sends
+   the latest whole report (g_vjoy_pos, written by the main loop under
+   g_output_lock) at a fixed VJOY_PUMP_HZ off a high-resolution timer,
+   independent of how fast the controller can be polled. While free look
+   is active the main loop leaves sending entirely to this, so the look
+   rate is exactly this steady rate; otherwise the main loop still sends
+   every change immediately too (no added latency for flight). Runs while
+   g_vjoy_pump_live (vJoy live, a controller connected). */
+#define VJOY_PUMP_HZ 1000
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002 /* Windows 10 1803+ */
+#endif
+static VjoyPosition g_vjoy_pos;
+static volatile LONG g_vjoy_pump_live = 0;
+/* Paced against absolute deadlines (start + n * period), not "wait one
+   period, then send": measured on this machine, a plain 1ms high-res timer
+   re-armed each tick only averaged 678 Hz (intervals 1.0-1.9ms). Sleeping
+   on the timer until VJOY_PUMP_SPIN_US before each deadline and spinning
+   the rest measured an exact 1000 Hz average (individual intervals
+   0.28-1.52ms) for ~9% of one core -- spinning the whole period would be
+   steadier still but costs a full core. */
+#define VJOY_PUMP_SPIN_US 300
+/* Third round, same day: still "super stuttery" while looking, measured
+   intervals 0.13-1.73ms around the 1ms average. If WARDOGS adds up look
+   input per report, a frame that catches 6 reports turns the camera half
+   as far as one that catches 11 -- so while free look is active this
+   spins the whole period instead (measured 0.46-0.56ms intervals at 2000
+   Hz, at the cost of one core, only while RB is held), at twice the rate
+   ("crank the data rate", per the user -- and if it is per-report, twice
+   the turning speed too). Kept at 2000, not higher: very high report rates
+   (8000 Hz mice) are a known cause of stutter in some games themselves.
+   Each report while looking also flips Slider0's lowest bit (1/16384 of
+   the range, nothing a deadzone or a human would notice) so every report
+   carries a change -- in case WARDOGS reads change events (DirectInput
+   buffered data does), which identical repeats would never trigger. */
+#define VJOY_PUMP_LOOK_HZ 2000
+static DWORD WINAPI vjoy_pump_thread(LPVOID arg) {
+    (void)arg;
+    HANDLE timer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    log_line("vjoy pump: %d Hz (%d Hz while looking), %s timer", VJOY_PUMP_HZ, VJOY_PUMP_LOOK_HZ,
+              timer ? "high-resolution" : "NO high-resolution (Sleep(1) fallback)");
+    LARGE_INTEGER freq, next, now;
+    QueryPerformanceFrequency(&freq);
+    const LONGLONG period_normal = freq.QuadPart / VJOY_PUMP_HZ;
+    const LONGLONG period_look = freq.QuadPart / VJOY_PUMP_LOOK_HZ;
+    const LONGLONG spin = freq.QuadPart * VJOY_PUMP_SPIN_US / 1000000;
+    unsigned tick = 0;
+    QueryPerformanceCounter(&next);
+    for (;;) {
+        if (!g_vjoy_pump_live) { /* nothing to send (Normal mode, no controller) -- idle cheaply */
+            Sleep(5);
+            QueryPerformanceCounter(&next);
+            continue;
+        }
+        LONG look = g_freelook_state;
+        int looking = look == FREELOOK_LOOKING || look == FREELOOK_LOOKING_LOCK_ARMED;
+        int spinFast = looking && !FREELOOK_USE_MOUSE; /* mouse look is time-based, doesn't need the steady 2000 Hz */
+        const LONGLONG period = spinFast ? period_look : period_normal;
+        next.QuadPart += period;
+        QueryPerformanceCounter(&now);
+        if (now.QuadPart - next.QuadPart > period * 50) next = now; /* fell far behind (system stall): resync, don't burst */
+        LONGLONG coarse = next.QuadPart - now.QuadPart - spin;
+        if (!spinFast && coarse > 0) {
+            LARGE_INTEGER due;
+            due.QuadPart = -(coarse * 10000000LL / freq.QuadPart); /* relative, 100ns units */
+            if (timer && due.QuadPart < 0 && SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE))
+                WaitForSingleObject(timer, INFINITE);
+            else if (!timer)
+                Sleep(1);
+        }
+        do {
+            cpu_relax();
+            QueryPerformanceCounter(&now);
+        } while (now.QuadPart < next.QuadPart);
+        EnterCriticalSection(&g_output_lock);
+        if (g_vjoy_pump_live && g_vjoy_acquired) {
+            VjoyPosition pos = g_vjoy_pos;
+            if (looking && !FREELOOK_USE_BUTTONS && !FREELOOK_USE_MOUSE && (++tick & 1)) pos.wSlider += pos.wSlider < AXIS_MAX ? 1 : -1;
+            vjoy_send_position(g_vjoy_rid, &pos);
+        }
+        LeaveCriticalSection(&g_output_lock);
+
+        /* Mouse-mode free look -- see FREELOOK_USE_MOUSE. Distance from
+           real elapsed time, fractional counts carried over, so the speed
+           is the same however unevenly these ticks land. */
+        if (FREELOOK_USE_MOUSE) {
+            static LARGE_INTEGER lastMouse;
+            static double carry = 0;
+            double dt = lastMouse.QuadPart ? (double)(now.QuadPart - lastMouse.QuadPart) / freq.QuadPart : 0;
+            lastMouse = now;
+            if (dt > 0.05) dt = 0.05; /* after an idle gap, don't jump */
+            LONG x = g_freelook_mouse_x;
+            int mag = x < 0 ? -x : x;
+            if (mag > FREELOOK_MOUSE_DEADZONE) {
+                double v = (double)(mag - FREELOOK_MOUSE_DEADZONE) / (32767 - FREELOOK_MOUSE_DEADZONE);
+                if (v > 1) v = 1;
+                carry += (x < 0 ? -v : v) * g_freelook_mouse_speed * dt;
+                LONG dx = (LONG)carry; /* truncates toward zero; the rest carries */
+                if (dx) {
+                    carry -= dx;
+                    INPUT in;
+                    memset(&in, 0, sizeof(in));
+                    in.type = INPUT_MOUSE;
+                    in.mi.dx = dx;
+                    in.mi.dwFlags = MOUSEEVENTF_MOVE;
+                    SendInput(1, &in, sizeof(in));
+                }
+            } else {
+                carry = 0;
+            }
+        }
+    }
+    return 0;
 }
 
 /* Runs on its own OS-spawned thread the instant Ctrl+C is pressed, the
@@ -4841,6 +5225,7 @@ static void vjoy_send_neutral(UINT rid) {
    finish before forcing termination, plenty for one HidHideCLI call. */
 static BOOL WINAPI console_ctrl_handler(DWORD ctrl_type) {
     (void)ctrl_type;
+    freelook_release_alt(); /* never leave Left Alt held down system-wide -- see FREELOOK_USE_MOUSE */
     relinquish_vjoy_if_acquired();
     run_hidhide("--cloak-off");
     restore_gamebar_guide_capture(); /* undo whatever this session changed, same as the cloak-off right above */
@@ -4873,6 +5258,7 @@ static void fatal_exit(const char *message) {
        "was anything actually done" state), so it's safe to call
        unconditionally even this early, before vJoy/ViGEm/HidHide are
        necessarily set up at all. */
+    freelook_release_alt();
     relinquish_vjoy_if_acquired();
     run_hidhide("--cloak-off");
     restore_gamebar_guide_capture();
@@ -5092,15 +5478,27 @@ static int destroy_vjoy_root_devices(void) {
    bits) to 0x6e (110 bits) by that same 2 bits so the total report stays
    the same 64-byte size it always was -- NUM_VJOY_BUTTONS above must
    match this descriptor's button count, or vJoy will configure a device
-   with a different number of buttons than this relay actually drives. */
+   with a different number of buttons than this relay actually drives.
+
+   2026-10-01: the two 32-bit constant fields right after RZ (vJoy's fixed
+   Slider0/Slider1 slots, previously just padding) are now real Slider0
+   (usage 0x36) / Slider1 (0x37) axes, for the RB free look -- see
+   FREELOOK_MODIFIER_PHYS. Same 32 bits each, so the 64-byte report size
+   is unchanged; only the descriptor grows by 4 bytes. Existing axis
+   indices (X..RZ = 0..5, what WARDOGS's saved bindings point at) don't
+   move -- the sliders come after them. vjoy_session_setup_thread()
+   rewrites this every launch, so it takes effect on the next start. */
 static const BYTE VJOY_HID_REPORT_DESCRIPTOR[] = {
     0x05, 0x01, 0x15, 0x00, 0x09, 0x04, 0xa1, 0x01, 0x05, 0x01, 0x85, 0x02, 0x09, 0x01, 0x15, 0x00,
     0x26, 0xff, 0x7f, 0x75, 0x20, 0x95, 0x01, 0xa1, 0x00, 0x09, 0x30, 0x81, 0x02, 0x09, 0x31, 0x81,
     0x02, 0x09, 0x32, 0x81, 0x02, 0x09, 0x33, 0x81, 0x02, 0x09, 0x34, 0x81, 0x02, 0x09, 0x35, 0x81,
-    0x02, 0x81, 0x01, 0x81, 0x01, 0xc0, 0x75, 0x20, 0x95, 0x04, 0x81, 0x01, 0x05, 0x09, 0x15, 0x00,
-    0x25, 0x01, 0x55, 0x00, 0x65, 0x00, 0x19, 0x01, 0x29, 0x12, 0x75, 0x01, 0x95, 0x12, 0x81, 0x02,
-    0x75, 0x6e, 0x95, 0x01, 0x81, 0x01, 0xc0,
+    0x02, 0x09, 0x36, 0x81, 0x02, 0x09, 0x37, 0x81, 0x02, 0xc0, 0x75, 0x20, 0x95, 0x04, 0x81, 0x01,
+    0x05, 0x09, 0x15, 0x00,
+    0x25, 0x01, 0x55, 0x00, 0x65, 0x00, 0x19, 0x01, 0x29, 0x14, 0x75, 0x01, 0x95, 0x14, 0x81, 0x02,
+    0x75, 0x6c, 0x95, 0x01, 0x81, 0x01, 0xc0,
 };
+/* ^ buttons: usage max / report count 0x14 = VJOY_DESCRIPTOR_BUTTONS (20), padding 0x6c (108) bits, so
+     20 + 108 = 128 bits, the same 16 bytes as the old 18 + 110 -- report size unchanged. */
 
 /* Byte-for-byte against VJOY_HID_REPORT_DESCRIPTOR, not just "is some
    descriptor present" -- the button count grew from 16 to
@@ -6638,6 +7036,13 @@ int main(int argc, char **argv) {
             "crash left it hidden).\n\n");
 
     CreateThread(NULL, 0, toggle_thread, NULL, 0, &g_toggle_thread_id);
+    {
+        HANDLE pump = CreateThread(NULL, 0, vjoy_pump_thread, NULL, 0, NULL);
+        if (pump) {
+            SetThreadPriority(pump, THREAD_PRIORITY_TIME_CRITICAL); /* a steady clock is the whole point */
+            CloseHandle(pump);
+        }
+    }
 
     if (!pvJoyEnabled()) {
         fatal_exit("vJoy driver is not enabled/running. Check the vJoy Configuration app.");
@@ -6857,6 +7262,20 @@ int main(int argc, char **argv) {
         int batteryPollTicks = 0; /* battery doesn't change fast enough to need checking every 15Hz dashboard
                                        tick -- counts ticks so the actual poll only fires once every ~1s (see
                                        below), keeping this cheap regardless of how often the dashboard redraws */
+        /* RB free look state, see FREELOOK_MODIFIER_PHYS -- per connection, so a fresh connect starts clean. */
+        int lookHeld = 0;               /* modifier held in HOTAS mode: right stick X -> Slider0 */
+        int lookLockArmed = 0;          /* R3 clicked during this look: letting go skips the reset */
+        int lookLocked = 0;             /* let go with the lock armed: camera parked until RB tap or R3 click */
+        int lockBtnWas = 0;             /* R3's previous state, for press edges */
+        int lockBtnSwallowed = 0;       /* R3 press used for the lock -- kept from the game until released */
+        int lookBtnDir = 0;             /* FREELOOK_USE_BUTTONS: -1 look-left held, +1 look-right held, 0 neither */
+        ULONGLONG lookResetUntil = 0;   /* reset tap in progress until this tick, 0 = none */
+        InterlockedExchange(&g_freelook_state, FREELOOK_OFF);
+        /* The whole vJoy report, also re-sent by vjoy_pump_thread() -- see
+           its comment. Fresh connect starts neutral. */
+        EnterCriticalSection(&g_output_lock);
+        vjoy_neutral_position(&g_vjoy_pos);
+        LeaveCriticalSection(&g_output_lock);
 
         int connected = 1;
         while (connected) {
@@ -6973,8 +7392,73 @@ int main(int argc, char **argv) {
                                                              output just got muted, then skip re-sending identical
                                                              neutral data on every subsequent unchanged frame (see
                                                              the vjoy_muted/vigem_update guards further down) */
+
+            /* RB free look, HOTAS mode only -- see FREELOOK_MODIFIER_PHYS's
+               comment. Only changes state here; the vJoy writes below act
+               on it. look_changed forces a write even when gp itself didn't
+               change (the reset tap ending, a lock change). */
+            int look_changed = 0;
+            {
+                int lookNow = modeNow == 1 && g_freelook_enabled && (gp.wButtons & FREELOOK_MODIFIER_PHYS) != 0;
+                int lockBtnNow = (gp.wButtons & FREELOOK_LOCK_PHYS) != 0;
+                int lockBtnPressed = lockBtnNow && !lockBtnWas;
+                lockBtnWas = lockBtnNow;
+                ULONGLONG nowTick = GetTickCount64();
+
+                if (modeNow != 1 && (lookLocked || lookLockArmed)) { /* left HOTAS mode: nothing to keep locked */
+                    lookLocked = lookLockArmed = 0;
+                    look_changed = 1;
+                }
+                if (lookNow && !lookHeld) {
+                    /* Pressed: a fresh look. Also how a tap unlocks -- the
+                       lock is dropped here, so letting go resets as usual. */
+                    lookLocked = lookLockArmed = 0;
+                } else if (!lookNow && lookHeld && modeNow == 1) {
+                    /* Let go in HOTAS mode (not "left HOTAS mode while holding"). */
+                    if (lookLockArmed) lookLocked = 1;
+                    else lookResetUntil = nowTick + FREELOOK_RESET_PULSE_MS;
+                    lookLockArmed = 0;
+                }
+                if (lookNow != lookHeld) {
+                    lookHeld = lookNow;
+                    look_changed = 1;
+                }
+                if (lockBtnPressed && modeNow == 1 && (lookHeld || lookLocked)) {
+                    if (lookHeld) {
+                        lookLockArmed = !lookLockArmed; /* R3 while looking: arm/cancel the lock */
+                    } else {
+                        lookLocked = 0; /* R3 on its own while locked: unlock + snap back now */
+                        lookResetUntil = nowTick + FREELOOK_RESET_PULSE_MS;
+                    }
+                    lockBtnSwallowed = 1;
+                    look_changed = 1;
+                }
+                if (lockBtnSwallowed && !lockBtnNow) lockBtnSwallowed = 0;
+                if (lookResetUntil != 0 && nowTick >= lookResetUntil) {
+                    lookResetUntil = 0; /* tap over -- the write below releases it */
+                    look_changed = 1;
+                }
+                InterlockedExchange(&g_freelook_state, lookHeld ? (lookLockArmed ? FREELOOK_LOOKING_LOCK_ARMED
+                                                                                 : FREELOOK_LOOKING)
+                                                    : lookLocked ? FREELOOK_LOCKED
+                                                                 : FREELOOK_OFF);
+                /* Mouse mode: Alt held while looking or locked, released
+                   the moment neither applies (incl. leaving HOTAS mode);
+                   the stick only moves the mouse while RB is actually held. */
+                if (FREELOOK_USE_MOUSE) {
+                    int wantAlt = modeNow == 1 && (lookHeld || lookLocked);
+                    if (wantAlt && !g_freelook_alt_held) {
+                        InterlockedExchange(&g_freelook_alt_held, 1);
+                        freelook_send_alt(1);
+                    } else if (!wantAlt && g_freelook_alt_held) {
+                        freelook_release_alt();
+                    }
+                    InterlockedExchange(&g_freelook_mouse_x, lookHeld ? gp.sThumbRX : 0);
+                }
+            }
+
             if (memcmp(&gp, &lastGamepad, sizeof(gp)) != 0 || g_ps_pressed != lastPsSent ||
-                g_touchpad_pressed != lastTouchpadSent || mode_changed) {
+                g_touchpad_pressed != lastTouchpadSent || mode_changed || look_changed) {
                 lastGamepad = gp;
                 lastPsSent = g_ps_pressed;
                 lastTouchpadSent = g_touchpad_pressed;
@@ -7029,12 +7513,25 @@ int main(int argc, char **argv) {
                 if (!vjoy_muted || mode_changed) {
                     SHORT nly = gp.sThumbLY == -32768 ? 32767 : (SHORT)(-gp.sThumbLY);
                     SHORT nry = gp.sThumbRY == -32768 ? 32767 : (SHORT)(-gp.sThumbRY);
-                    pSetAxis(vjoy_muted ? i16_to_axis(0) : i16_to_axis(gp.sThumbLX), rid, HID_USAGE_X);
-                    pSetAxis(vjoy_muted ? i16_to_axis(0) : i16_to_axis(nly), rid, HID_USAGE_Y);
-                    pSetAxis(vjoy_muted ? u8_to_axis(0) : u8_to_axis(gp.bLeftTrigger), rid, HID_USAGE_Z);
-                    pSetAxis(vjoy_muted ? u8_to_axis(0) : u8_to_axis(gp.bRightTrigger), rid, HID_USAGE_RZ);
-                    pSetAxis(vjoy_muted ? i16_to_axis(0) : i16_to_axis(gp.sThumbRX), rid, HID_USAGE_RX);
-                    pSetAxis(vjoy_muted ? i16_to_axis(0) : i16_to_axis(nry), rid, HID_USAGE_RY);
+                    /* Built as one whole report and sent in a single call --
+                       see vjoy_send_position()'s comment. */
+                    vjoy_neutral_position(&g_vjoy_pos);
+                    if (!vjoy_muted) {
+                        g_vjoy_pos.wAxisX = i16_to_axis(gp.sThumbLX);
+                        g_vjoy_pos.wAxisY = i16_to_axis(nly);
+                        g_vjoy_pos.wAxisZ = u8_to_axis(gp.bLeftTrigger);
+                        g_vjoy_pos.wAxisZRot = u8_to_axis(gp.bRightTrigger);
+                        /* RB free look: while looking, the right stick's
+                           left/right stops rolling and turns the camera
+                           (Slider0) instead; up/down keeps flying pitch --
+                           the user only wants to look left/right ("I don't
+                           need up and down, and I need that to work still
+                           when I'm in free look"). Slider1 (look up/down)
+                           stays centered. */
+                        g_vjoy_pos.wAxisXRot = i16_to_axis(lookHeld ? 0 : gp.sThumbRX);
+                        g_vjoy_pos.wAxisYRot = i16_to_axis(nry);
+                        if (lookHeld && !FREELOOK_USE_BUTTONS && !FREELOOK_USE_MOUSE) g_vjoy_pos.wSlider = i16_to_axis(gp.sThumbRX);
+                    }
 
                     /* Whenever the PS button, touchpad, or Guide button is
                        (part of) the configured toggle combo, a press of it
@@ -7063,14 +7560,35 @@ int main(int argc, char **argv) {
                     for (int b = 0; b < NUM_VJOY_BUTTONS; b++) {
                         DWORD phys = g_button_map[b];
                         int pressed = vjoy_muted ? 0
+                                      /* the free-look button's own vJoy button(s) only ever carry the reset
+                                         tap in HOTAS mode, never the held press -- see FREELOOK_MODIFIER_PHYS */
+                                      : phys == FREELOOK_MODIFIER_PHYS && modeNow == 1 && g_freelook_enabled ? lookResetUntil != 0
+                                      /* R3 presses the lock used are never sent to the game, until let go */
+                                      : phys == FREELOOK_LOCK_PHYS && lockBtnSwallowed ? 0
                                       : phys == PHYS_TRIGGER_L   ? gp.bLeftTrigger > TRIGGER_CLICK_THRESHOLD
                                       : phys == PHYS_TRIGGER_R ? gp.bRightTrigger > TRIGGER_CLICK_THRESHOLD
                                       : phys == PHYS_PS_BUTTON  ? (ps_is_toggle ? 0 : g_ps_pressed)
                                       : phys == PHYS_TOUCHPAD   ? (touchpad_is_toggle ? 0 : g_touchpad_pressed)
                                       : phys == PHYS_GUIDE_BUTTON ? (guide_is_toggle ? 0 : g_guide_pressed)
                                                                 : (gp.wButtons & phys) != 0;
-                        pSetBtn(pressed, rid, (UCHAR)(b + 1));
+                        if (pressed) g_vjoy_pos.lButtons |= 1L << b;
                     }
+                    /* Look left/right as held buttons -- see FREELOOK_USE_BUTTONS. */
+                    if (FREELOOK_USE_BUTTONS && !FREELOOK_USE_MOUSE && lookHeld && !vjoy_muted) {
+                        int x = gp.sThumbRX;
+                        if (lookBtnDir < 0 && x > -FREELOOK_BTN_OFF) lookBtnDir = 0;
+                        if (lookBtnDir > 0 && x < FREELOOK_BTN_OFF) lookBtnDir = 0;
+                        if (lookBtnDir == 0) lookBtnDir = x <= -FREELOOK_BTN_ON ? -1 : x >= FREELOOK_BTN_ON ? 1 : 0;
+                        if (lookBtnDir < 0) g_vjoy_pos.lButtons |= 1L << (FREELOOK_LEFT_VJOY_BTN - 1);
+                        if (lookBtnDir > 0) g_vjoy_pos.lButtons |= 1L << (FREELOOK_RIGHT_VJOY_BTN - 1);
+                    } else {
+                        lookBtnDir = 0;
+                    }
+                    /* While looking, vjoy_pump_thread() alone sends, at its
+                       fixed rate -- see its comment. Otherwise send this
+                       change right now, like always. */
+                    if (g_vjoy_acquired && !lookHeld) vjoy_send_position(rid, &g_vjoy_pos);
+                    InterlockedExchange(&g_vjoy_pump_live, !vjoy_muted);
                 }
 
                 /* The other half of the same mutual-exclusivity: same
@@ -7163,6 +7681,16 @@ int main(int argc, char **argv) {
                 } else if (key == 'M') {
                     run_button_map_flow(backend, userIndex);
                     QueryPerformanceCounter(&lastPrint);
+                } else if (FREELOOK_USE_MOUSE && g_freelook_enabled && (key == '+' || key == '=' || key == '-' || key == '_')) {
+                    /* Mouse free-look speed, live, 20% steps -- see FREELOOK_USE_MOUSE.
+                       Saved straight to the ini (freelook_speed=) so it sticks. */
+                    LONG s = g_freelook_mouse_speed;
+                    s = (key == '+' || key == '=') ? s + s / 5 : s - s / 5;
+                    if (s < 200) s = 200;
+                    if (s > 40000) s = 40000;
+                    InterlockedExchange(&g_freelook_mouse_speed, s);
+                    save_config(g_hotkey_mods, g_hotkey_vk, g_toggle_button_mask, g_toggle_hold_ms, g_game_path);
+                    log_line("freelook: mouse speed now %ld", (long)s);
                 } else if (key == 'V') {
                     /* Live switch between the emulated virtual controller
                        looking like an Xbox 360 pad or a DualShock 4 -- the
@@ -7256,6 +7784,9 @@ int main(int argc, char **argv) {
                 Sleep(50);
             log_line("vigem: controller dropped -- virtual pad's slot unknown, torn down instead of kept");
         }
+        InterlockedExchange(&g_vjoy_pump_live, 0); /* stop re-sending the last live report first */
+        freelook_release_alt(); /* controller dropped mid-look/lock: let go of Alt */
+        InterlockedExchange(&g_freelook_state, FREELOOK_OFF);
         vjoy_send_neutral(rid);
         relinquish_vjoy_if_acquired();
         restore_gamebar_guide_capture(); /* self-guarded/idempotent, safe to call even if this disconnect

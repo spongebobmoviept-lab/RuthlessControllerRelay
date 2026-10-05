@@ -97,11 +97,24 @@ Two separate Steam settings can each independently break this — see [Known Lim
 
 When the PS button (or touchpad) is configured as the toggle specifically, it's deliberately never also forwarded as a normal vJoy button at the same time — so it can't do double duty as both a mode-switch and a bound joystick action. (This doesn't apply to standard buttons like Back+Start, which keep working as ordinary vJoy buttons even while also serving as the toggle combo — unchanged, long-standing behavior.)
 
+### Stream Deck and macro-pad control (optional)
+
+New in v1.2.0, off by default. Set `control_pipe=on` in `ruthless_controller_relay.ini` and a Stream Deck, any macro pad, or a script can switch HOTAS/Normal mode, flip the virtual pad between Xbox and PlayStation, turn free look on or off, read the battery and live status, and close the relay. Unlike keyboard shortcuts, it keeps working while an administrator game has focus.
+
+- **No plugin needed:** the included `RelayControl.exe` sends one command (`RelayControl.exe mode toggle`). Point a Stream Deck **System > Open** button at a shortcut to it.
+- **Plugin authors:** it's a tiny local text protocol, one command per connection.
+
+Local only, and the controller path isn't touched. Full guide: **[docs/STREAM_DECK.md](docs/STREAM_DECK.md)**.
+
+### Discord button in Normal mode (optional)
+
+New in v1.2.0, off by default. Discord's keybinds can't see the virtual Xbox pad, so in Normal mode there was no controller button Discord could use for its mute. With `discord_button=dpad_down`, pressing D-pad down in Normal mode also presses an otherwise unused virtual-joystick button (button 18). Bind Discord's **Toggle Mute** to it, and a tap flips your mute while you play. HOTAS mode is unchanged. Setup and notes: **[docs/STREAM_DECK.md § Discord button](docs/STREAM_DECK.md#discord-button-in-normal-xbox-mode)**.
+
 ## What's coming next
 
-- **Push-to-talk on the controller side (Normal mode).** Up next.
+Nothing scheduled right now. Ideas and requests are welcome in [Issues](../../issues).
 
-Free look in HOTAS mode and the steadier virtual-joystick output, listed here before, shipped in [v1.1.0](CHANGELOG.md).
+Controller-side push-to-talk, listed here before, shipped in [v1.2.0](CHANGELOG.md) as the Normal-mode Discord button, along with Stream Deck control. Free look in HOTAS mode shipped in v1.1.0.
 
 ## What works and what doesn't
 
@@ -139,6 +152,12 @@ zig cc -target x86_64-windows-gnu -O2 -Wall -Wextra \
 ```
 
 `third_party/vigem_client/ViGEmClient.dll` and the contents of `third_party/drivers/` need to sit next to the built exe at runtime — see [docs/DEVELOPMENT_JOURNEY.md](docs/DEVELOPMENT_JOURNEY.md) for exactly why the driver payload is structured this way instead of shelling out to each vendor's own GUI installer.
+
+`RelayControl.exe`, the small helper for Stream Deck buttons and scripts, is a separate program:
+```sh
+zig cc -target x86_64-windows-gnu -O2 -Wall -Wextra -Wl,--subsystem,windows -s \
+    -o RelayControl.exe src/relay_control.c
+```
 
 Add `-DSAFE_MODE_NO_EXTRAS` to build a stripped-down fallback variant with no rumble/LED/battery code compiled in at all — a minimal, maximally conservative build for if the full one ever misbehaves on a specific machine.
 

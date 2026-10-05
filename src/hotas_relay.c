@@ -93,13 +93,14 @@
 #define COBJMACROS
 #include <dinput.h>
 #include <commdlg.h>
+#include <sddl.h> /* ConvertStringSecurityDescriptorToSecurityDescriptorA, for the control pipe */
 
 /* Shown in the dashboard/waiting-screen header so anyone can tell at a
    glance which release they're running -- added with 1.0.1, the first
    release that fixed a bug serious enough that people needed to know
    whether they still had the old build (see CHANGELOG.md). Bump this with
    every GitHub release. */
-#define RELAY_VERSION "1.1.0"
+#define RELAY_VERSION "1.2.0"
 
 #define HIDHIDE_CLI "\"C:\\Program Files\\Nefarius Software Solutions\\HidHide\\x64\\HidHideCLI.exe\""
 #define TOGGLE_HOTKEY_ID 1
@@ -311,6 +312,18 @@ static inline void cpu_relax(void) { __builtin_ia32_pause(); }
    button-remap system instead of keeping its own separate, narrower
    table. */
 static DWORD g_toggle_button_mask = XINPUT_GAMEPAD_BACK | XINPUT_GAMEPAD_START;
+/* discord_button= in the ini (default none). In Normal (Xbox) mode vJoy is
+   kept silent so the game never sees doubled input -- except that pressing
+   this button presses vJoy button VJOY_DISCORD_BTN (18), which an Xbox
+   controller never presses otherwise. Discord's keybinds can't see the Xbox
+   virtual pad but can see vJoy, so a Discord keybind on that button (e.g.
+   Toggle Mute) fires from it -- in Normal mode only. In HOTAS mode the
+   button does what it always did. Plain buttons only (the XInput
+   wButtons bits -- no triggers/PS/touchpad/Guide); several joined with +
+   all press the same button 18. Nothing about vJoy's output changes unless
+   this is set; when it is, vJoy is only written in Normal mode at the
+   moment one of these buttons changes. */
+static DWORD g_vjoy_passthrough = 0;
 static DWORD g_toggle_hold_ms = 0;
 /* Set by load_config() only when ruthless_controller_relay.ini didn't
    exist at all yet (a genuinely fresh install) -- Back+Start above is
@@ -495,6 +508,14 @@ static int g_guide_pressed = 0;
    which no physical button maps to. */
 #define NUM_VJOY_BUTTONS 18
 #define VJOY_DESCRIPTOR_BUTTONS 20
+/* discord_button='s vJoy button (1-based; Discord and WARDOGS count from 0
+   and show it as button 17). It's the slot the default button map gives the
+   PlayStation touchpad click, which an Xbox controller never presses, and
+   WARDOGS has nothing bound to it -- so a Discord keybind on it fires only
+   from discord_button= in Normal mode. (With a PlayStation pad the touchpad
+   click presses it in HOTAS mode too, unless the touchpad is the mode
+   button.) No new vJoy button: the device stays exactly as it was. */
+#define VJOY_DISCORD_BTN 18
 
 /* Which physical input drives each vJoy button 1-NUM_VJOY_BUTTONS -- index
    0 is vJoy button 1, etc. Defaults match the original fixed A=1/B=2/.../trigger
@@ -1135,6 +1156,100 @@ static void do_toggle(void) {
     update_ps_mode_led();
 }
 
+/* ===== Optional Stream Deck / macro-pad control (control_pipe=on) =====
+   Added 2026-10-04 for the user's Stream Deck. OFF unless control_pipe=on
+   in the ini. A local named pipe that only programs on this PC can reach
+   (PIPE_REJECT_REMOTE_CLIENTS) takes ONE short text command per connection
+   and answers with one status line. Why a pipe and not a hotkey: Steam
+   runs as admin, so the game is elevated and Windows silently drops
+   keystrokes a normal app (Stream Deck) tries to send while it's focused.
+   Deliberately tiny, fixed command set: switch mode, swap the virtual pad
+   type, free look on/off, status. It never touches HidHide (hiding stays
+   tied to connect/exit only, see g_hidden_mode), never launches anything,
+   never takes a path -- it's a door into an elevated process, so it only
+   opens onto these few switches. Runs on its own thread; the relay loop
+   never waits on it. */
+#define CONTROL_PIPE_NAME "\\\\.\\pipe\\RuthlessControllerRelay"
+static volatile LONG g_control_pipe_enabled = 0; /* control_pipe= in the ini */
+
+/* What the main thread is doing, for the status reply (the pipe thread
+   can't see main()'s locals). */
+enum { RELAY_STATE_STARTING = 0, RELAY_STATE_WAITING, RELAY_STATE_CONNECTED, RELAY_STATE_MENU };
+static volatile LONG g_relay_state = RELAY_STATE_STARTING;
+
+/* Requests the pipe thread can't safely carry out itself are handed to the
+   main thread, which applies them in service_ipc_requests(): a pad swap
+   tears down and recreates the ViGEm target (vigem_setup() isn't locked),
+   and the PS lightbar write belongs with the rest of the main loop's
+   output. Pad and free look are "last request wins" slots (-1 = nothing
+   pending) so two quick presses can't merge into one. */
+#ifndef SAFE_MODE_NO_EXTRAS /* SAFE builds have no pipe */
+#define IPC_REQ_LED 0x01L                      /* refresh the PS lightbar after a mode change */
+static volatile LONG g_ipc_req = 0;
+static volatile LONG g_ipc_pad_want = -1;      /* -1 none, 0 x360, 1 ds4 */
+static volatile LONG g_ipc_fl_want = -1;       /* -1 none, 0 off, 1 on (session only, never written to the ini) */
+/* Live input for the Stream Deck's input view. NOT taken in the part of
+   the loop that reads the controller and sends it to the game: it's copied
+   in the dashboard's ~15 Hz redraw step, from the same gp the on-screen
+   bars were just drawn from -- one 12-byte copy next to a whole screen
+   redraw. The pipe thread does all the formatting/sending. A torn read only
+   means one slightly mixed frame on a display key. */
+static XINPUT_GAMEPAD g_ipc_gp;
+static volatile LONG g_ipc_ps = 0;
+#endif
+
+typedef enum {
+    IPC_CMD_BAD = 0, IPC_CMD_STATUS,
+    IPC_CMD_MODE_HOTAS, IPC_CMD_MODE_NORMAL, IPC_CMD_MODE_TOGGLE,
+    IPC_CMD_PAD_X360, IPC_CMD_PAD_DS4, IPC_CMD_PAD_TOGGLE,
+    IPC_CMD_FL_ON, IPC_CMD_FL_OFF, IPC_CMD_FL_TOGGLE,
+    IPC_CMD_INPUT, /* live sticks/triggers/buttons for the Stream Deck's input view */
+    IPC_CMD_QUIT   /* close the relay -- the same clean exit as closing its window */
+} ipc_cmd_t;
+
+/* Pure (no globals touched), so --test-config can check it. Case-
+   insensitive; leading/trailing spaces and CR/LF ignored; anything else --
+   including extra words -- is IPC_CMD_BAD. */
+static ipc_cmd_t parse_ipc_command(const char *s) {
+    static const struct { const char *text; ipc_cmd_t cmd; } table[] = {
+        {"status", IPC_CMD_STATUS},
+        {"mode hotas", IPC_CMD_MODE_HOTAS}, {"mode normal", IPC_CMD_MODE_NORMAL}, {"mode toggle", IPC_CMD_MODE_TOGGLE},
+        {"pad x360", IPC_CMD_PAD_X360}, {"pad ds4", IPC_CMD_PAD_DS4}, {"pad toggle", IPC_CMD_PAD_TOGGLE},
+        {"freelook on", IPC_CMD_FL_ON}, {"freelook off", IPC_CMD_FL_OFF}, {"freelook toggle", IPC_CMD_FL_TOGGLE},
+        {"input", IPC_CMD_INPUT}, {"quit", IPC_CMD_QUIT},
+    };
+    char buf[40];
+    size_t n = 0;
+    if (!s) return IPC_CMD_BAD;
+    while (*s == ' ' || *s == '\t') s++;
+    while (s[n] && n < sizeof(buf) - 1) { buf[n] = (char)tolower((unsigned char)s[n]); n++; }
+    if (s[n]) return IPC_CMD_BAD; /* longer than any real command */
+    while (n && (buf[n - 1] == ' ' || buf[n - 1] == '\t' || buf[n - 1] == '\r' || buf[n - 1] == '\n')) n--;
+    buf[n] = '\0';
+    for (size_t i = 0; i < sizeof(table) / sizeof(table[0]); i++)
+        if (!strcmp(buf, table[i].text)) return table[i].cmd;
+    return IPC_CMD_BAD;
+}
+
+#ifndef SAFE_MODE_NO_EXTRAS /* only the pipe thread uses this, and SAFE builds have no pipe */
+/* Pipe-thread side of a mode command: one atomic compare-and-swap --
+   exactly what do_toggle() does, minus the LED write, which is handed to
+   the main thread. The main loop picks the new mode up on its next spin.
+   (A flip racing a hotkey press within the same few nanoseconds could still
+   be lost, since do_toggle() itself isn't a CAS -- harmless, left alone.)
+   Returns 1 if the mode actually changed. */
+static int ipc_set_mode(ipc_cmd_t c) {
+    LONG old, nw;
+    do {
+        old = g_hidden_mode;
+        nw = c == IPC_CMD_MODE_TOGGLE ? (old == 1 ? 0 : 1) /* from "unset" (-1) a toggle goes to HOTAS, like do_toggle() */
+           : c == IPC_CMD_MODE_HOTAS ? 1 : 0;
+    } while (InterlockedCompareExchange(&g_hidden_mode, nw, old) != old);
+    if (nw != old) InterlockedOr(&g_ipc_req, IPC_REQ_LED);
+    return nw != old;
+}
+#endif
+
 typedef struct { const char *name; UINT vk; } NamedKey;
 static const NamedKey NAMED_KEYS[] = {
     {"f1", VK_F1}, {"f2", VK_F2}, {"f3", VK_F3}, {"f4", VK_F4}, {"f5", VK_F5}, {"f6", VK_F6},
@@ -1641,8 +1756,39 @@ static void save_config(UINT mods, UINT vk, DWORD button_mask, DWORD hold_ms, co
         "# freelook_speed: camera turn speed at full stick (mouse counts per\n"
         "# second). Change it live with + and - while the dashboard is showing --\n"
         "# saved here automatically.\n"
-        "freelook_speed=%ld\n",
-        g_freelook_enabled ? "on" : "off", (long)g_freelook_mouse_speed);
+        "freelook_speed=%ld\n"
+        "#\n"
+        "# control_pipe: on or off (default off). On lets a Stream Deck or another\n"
+        "# macro-pad app on THIS PC switch HOTAS/Normal mode, the virtual pad type\n"
+        "# and free look, and show the relay's status on its keys. Local only --\n"
+        "# nothing on the network can reach it -- and it can't do anything else.\n"
+        "control_pipe=%s\n"
+        "#\n"
+        "# discord_button: in Normal (Xbox) mode this button also presses vJoy\n"
+        "# button 18 -- e.g. dpad_down, or none (default). Discord can't see the\n"
+        "# Xbox virtual pad but can see vJoy, so bind a Discord keybind (say,\n"
+        "# Toggle Mute) to button 18 and it fires from this button in Normal mode.\n"
+        "# An Xbox controller never presses button 18 otherwise. With a\n"
+        "# PlayStation pad it's the touchpad click by default (or whatever M\n"
+        "# mapped there), which presses it in HOTAS mode too, unless the touchpad\n"
+        "# is your mode button. Don't use your mode button(s) here.\n"
+        "# Everything else on vJoy stays silent in Normal mode, like always.\n"
+        "# Plain buttons only: a b x y lb rb back start l3 r3 dpad_up dpad_down\n"
+        "# dpad_left dpad_right (not lt, rt, ps, touchpad or guide; no :hold).\n"
+        "discord_button=",
+        g_freelook_enabled ? "on" : "off", (long)g_freelook_mouse_speed, g_control_pipe_enabled ? "on" : "off");
+    if (!g_vjoy_passthrough) {
+        fprintf(out, "none");
+    } else {
+        int first = 1;
+        for (size_t i = 0; i < sizeof(NAMED_PHYS) / sizeof(NAMED_PHYS[0]); i++) {
+            if (NAMED_PHYS[i].phys <= 0xFFFFu && (g_vjoy_passthrough & NAMED_PHYS[i].phys)) {
+                fprintf(out, "%s%s", first ? "" : "+", NAMED_PHYS[i].name);
+                first = 0;
+            }
+        }
+    }
+    fprintf(out, "\n");
     fclose(out);
 }
 
@@ -1722,6 +1868,22 @@ static void load_config(UINT *mods_out, UINT *vk_out, DWORD *button_mask_out, DW
                 InterlockedExchange(&g_freelook_enabled, 0);
             else
                 InterlockedExchange(&g_freelook_enabled, 1);
+        } else if (!strncmp(p, "discord_button=", 15)) {
+            DWORD mask = 0, hold_unused = 0;
+            if (parse_button_line(p + 15, &mask, &hold_unused)) {
+                if (mask & ~0xFFFFu)
+                    fprintf(stderr, "Warning: discord_button= in %s can't use lt, rt, ps, touchpad or guide -- those are ignored.\n",
+                            HOTKEY_CONFIG_FILE);
+                g_vjoy_passthrough = mask & 0xFFFFu; /* wButtons bits only */
+            } else {
+                fprintf(stderr, "Warning: couldn't parse discord_button= in %s, leaving it off.\n", HOTKEY_CONFIG_FILE);
+            }
+        } else if (!strncmp(p, "control_pipe=", 13)) {
+            char v[16] = {0};
+            strncpy(v, p + 13, sizeof(v) - 1);
+            for (char *c = v; *c; c++) *c = (char)tolower((unsigned char)*c);
+            InterlockedExchange(&g_control_pipe_enabled,
+                                (!strncmp(v, "on", 2) || v[0] == '1' || !strncmp(v, "true", 4) || !strncmp(v, "yes", 3)) ? 1 : 0);
         } else if (!strncmp(p, "freelook_speed=", 15)) {
             long s = atol(p + 15);
             if (s >= 200 && s <= 40000) InterlockedExchange(&g_freelook_mouse_speed, s);
@@ -6683,6 +6845,268 @@ static DWORD WINAPI vjoy_session_setup_thread(LPVOID arg) {
 
 #define VJOY_SESSION_SETUP_TIMEOUT_MS 90000
 
+#ifndef SAFE_MODE_NO_EXTRAS
+/* Main-thread side of the control pipe: carries out what the pipe thread
+   queued. connected=0 while waiting for a controller -- a pad swap must
+   never happen there (a fresh X360 pad with no known XInput slot is exactly
+   the 2026-10-01 ghost-pad bug), so a pad request is dropped; the pipe
+   thread already refuses them while not connected, this just catches one
+   queued right before a disconnect. No file writes and no logging here
+   except a real pad swap (as rare as pressing V). Returns 1 if the pad was
+   swapped (the caller redraws the dashboard, same as after the V key). */
+static int service_ipc_requests(int connected) {
+    int swapped = 0;
+    LONG fl = InterlockedExchange(&g_ipc_fl_want, -1);
+    if (fl >= 0 && fl != g_freelook_enabled)
+        InterlockedExchange(&g_freelook_enabled, fl); /* session only -- the ini's freelook= stays the startup default;
+                                                          the main loop releases a lock/Alt on its next spin */
+    LONG pad = InterlockedExchange(&g_ipc_pad_want, -1);
+    if (pad >= 0 && connected && g_vigem_target && pad != g_vigem_emulate_ds4) { /* never "swap" to the type it
+                                                                                     already is -- a swap pulls the
+                                                                                     pad out from under a running
+                                                                                     game for a moment */
+        vigem_teardown();
+        g_vigem_emulate_ds4 = (int)pad;
+        vigem_setup();
+        log_line("control pipe: virtual pad now %s", pad ? "ds4" : "x360");
+        swapped = 1;
+        InterlockedOr(&g_ipc_req, IPC_REQ_LED); /* same as the V key: the lightbar shows native PS vs standing in for Xbox */
+    }
+    if (InterlockedExchange(&g_ipc_req, 0) & IPC_REQ_LED) update_ps_mode_led();
+    return swapped;
+}
+
+/* Pipe side of pad / free-look commands: last request wins. A toggle
+   resolves against a request still waiting for the main thread first, so
+   two quick presses cancel out instead of merging into one. Then waits (on
+   this thread only, max ~300 ms) for the main thread to apply it, so the
+   reply already shows the new state. */
+static void ipc_queue_want(volatile LONG *want, LONG current, int toggle, LONG absolute) {
+    LONG pending = *want;
+    LONG base = pending >= 0 ? pending : current;
+    InterlockedExchange(want, toggle ? !base : absolute);
+    for (int i = 0; i < 30 && *want != -1; i++) Sleep(10);
+}
+
+/* One status line, e.g.
+   ok v=1.2.0 state=connected mode=hotas pad=x360 padlive=1 freelook=on look=idle batt=80 chg=0 ctrl=GameSir ...
+   ctrl= is always last and runs to the end of the line (names have spaces). */
+static void ipc_status_line(char *out, size_t len, const char *prefix) {
+    LONG st = g_relay_state, mode = g_hidden_mode, fls = g_freelook_state;
+    int live = st == RELAY_STATE_CONNECTED || st == RELAY_STATE_MENU;
+    const char *state = st == RELAY_STATE_CONNECTED ? "connected" : st == RELAY_STATE_WAITING ? "waiting"
+                      : st == RELAY_STATE_MENU ? "menu" : "starting";
+    const char *look = (mode != 1 || !live) ? "idle" : fls == FREELOOK_LOCKED ? "locked"
+                     : fls == FREELOOK_OFF ? "idle" : "looking";
+    char batt[16] = "-";
+    int chg = 0;
+    if (live) {
+        if (g_battery_src == BATTERY_SRC_PERCENT) {
+            snprintf(batt, sizeof(batt), "%d", g_battery_percent);
+            chg = g_battery_charging;
+        } else if (g_battery_src == BATTERY_SRC_COARSE) {
+            snprintf(batt, sizeof(batt), "%s",
+                     g_battery_coarse <= XINPUT_BATTERY_LEVEL_EMPTY ? "empty"
+                     : g_battery_coarse == XINPUT_BATTERY_LEVEL_LOW ? "low"
+                     : g_battery_coarse == XINPUT_BATTERY_LEVEL_MEDIUM ? "medium" : "full");
+        } else if (g_battery_src == BATTERY_SRC_WIRED) {
+            snprintf(batt, sizeof(batt), "wired");
+        }
+    }
+    snprintf(out, len, "%s v=" RELAY_VERSION " state=%s mode=%s pad=%s padlive=%d freelook=%s look=%s batt=%s chg=%d ctrl=%s\n",
+             prefix, state, mode == 1 ? "hotas" : mode == 0 ? "normal" : "unset", g_vigem_emulate_ds4 ? "ds4" : "x360",
+             g_vigem_target != NULL, g_freelook_enabled ? "on" : "off", look, batt, chg,
+             live ? describe_controller(g_backend) : "-");
+}
+
+/* Waits up to ms for an overlapped pipe op; cancels it on timeout. */
+static BOOL ipc_wait(HANDLE pipe, OVERLAPPED *ov, DWORD *got, DWORD ms) {
+    if (WaitForSingleObject(ov->hEvent, ms) != WAIT_OBJECT_0) {
+        CancelIo(pipe);
+        GetOverlappedResult(pipe, ov, got, TRUE);
+        return FALSE;
+    }
+    return GetOverlappedResult(pipe, ov, got, FALSE);
+}
+
+/* One connection = one command. Protocol: the client writes one line
+   (ending in \n -- or just closes after writing it), reads exactly one
+   reply line, then closes right away. Read: 1 s limit, 63 bytes max.
+   After replying, waits (500 ms max) for the client to hang up so the
+   reply isn't thrown away by DisconnectNamedPipe -- instead of
+   FlushFileBuffers, which could hang this thread on a client that never
+   reads. Anything extra a client sends is discarded. */
+static void ipc_handle_client(HANDLE pipe, HANDLE ev) {
+    char req[64], reply[320];
+    DWORD total = 0, got = 0;
+    OVERLAPPED ov;
+    ULONGLONG deadline = GetTickCount64() + 1000;
+    while (total < sizeof(req) - 1) {
+        ULONGLONG nowT = GetTickCount64();
+        if (nowT >= deadline) break;
+        memset(&ov, 0, sizeof(ov));
+        ov.hEvent = ev;
+        ResetEvent(ev);
+        BOOL ok = ReadFile(pipe, req + total, (DWORD)(sizeof(req) - 1 - total), &got, &ov);
+        if (!ok && GetLastError() == ERROR_IO_PENDING) ok = ipc_wait(pipe, &ov, &got, (DWORD)(deadline - nowT));
+        if (!ok || got == 0) break; /* client closed / timed out: use what arrived (a cut-off command just parses as bad) */
+        total += got;
+        if (memchr(req, '\n', total)) break;
+    }
+    if (total == 0) return;
+    char *eol = memchr(req, '\n', total);
+    DWORD len = eol ? (DWORD)(eol - req) : total;
+    req[len] = '\0';
+
+    ipc_cmd_t c = memchr(req, '\0', len) ? IPC_CMD_BAD : parse_ipc_command(req); /* an embedded NUL is never valid */
+    int live = g_relay_state == RELAY_STATE_CONNECTED;
+    int quit_after = 0;
+    switch (c) {
+    case IPC_CMD_INPUT: {
+        if (g_relay_state != RELAY_STATE_CONNECTED && g_relay_state != RELAY_STATE_MENU) {
+            snprintf(reply, sizeof(reply), "err no controller\n");
+            break;
+        }
+        XINPUT_GAMEPAD snap = g_ipc_gp;
+        snprintf(reply, sizeof(reply), "ok lx=%d ly=%d rx=%d ry=%d lt=%u rt=%u btn=%u ps=%d\n",
+                 snap.sThumbLX, snap.sThumbLY, snap.sThumbRX, snap.sThumbRY, (unsigned)snap.bLeftTrigger,
+                 (unsigned)snap.bRightTrigger, (unsigned)snap.wButtons, (int)g_ipc_ps);
+        break;
+    }
+    case IPC_CMD_QUIT:
+        snprintf(reply, sizeof(reply), "ok quitting\n");
+        quit_after = 1;
+        break;
+    case IPC_CMD_BAD:
+        snprintf(reply, sizeof(reply), "err unknown command\n");
+        break;
+    case IPC_CMD_STATUS:
+        ipc_status_line(reply, sizeof(reply), "ok");
+        break;
+    case IPC_CMD_MODE_HOTAS: case IPC_CMD_MODE_NORMAL: case IPC_CMD_MODE_TOGGLE:
+        if (ipc_set_mode(c)) log_line("control pipe: %s", req); /* only real changes get logged */
+        ipc_status_line(reply, sizeof(reply), "ok");
+        break;
+    case IPC_CMD_PAD_X360: case IPC_CMD_PAD_DS4: case IPC_CMD_PAD_TOGGLE:
+        if (!live) {
+            snprintf(reply, sizeof(reply), "err no controller\n");
+            break;
+        }
+        ipc_queue_want(&g_ipc_pad_want, g_vigem_emulate_ds4, c == IPC_CMD_PAD_TOGGLE, c == IPC_CMD_PAD_DS4);
+        ipc_status_line(reply, sizeof(reply), "ok");
+        break;
+    default: /* free look on/off/toggle */
+        ipc_queue_want(&g_ipc_fl_want, g_freelook_enabled, c == IPC_CMD_FL_TOGGLE, c == IPC_CMD_FL_ON);
+        ipc_status_line(reply, sizeof(reply), "ok");
+        break;
+    }
+
+    memset(&ov, 0, sizeof(ov));
+    ov.hEvent = ev;
+    ResetEvent(ev);
+    BOOL ok = WriteFile(pipe, reply, (DWORD)strlen(reply), &got, &ov);
+    if (!ok && GetLastError() == ERROR_IO_PENDING) ok = ipc_wait(pipe, &ov, &got, 1000);
+    if (!ok) return;
+    /* Wait for the client to close its end (the read then fails), discarding anything extra it sends. */
+    char sink[64];
+    ULONGLONG until = GetTickCount64() + 500;
+    for (;;) {
+        ULONGLONG nowT = GetTickCount64();
+        if (nowT >= until) break;
+        memset(&ov, 0, sizeof(ov));
+        ov.hEvent = ev;
+        ResetEvent(ev);
+        BOOL r = ReadFile(pipe, sink, sizeof(sink), &got, &ov);
+        if (!r && GetLastError() == ERROR_IO_PENDING) r = ipc_wait(pipe, &ov, &got, (DWORD)(until - nowT));
+        if (!r || got == 0) break;
+    }
+    if (quit_after) {
+        /* Exactly what closing the relay window does: Windows runs
+           console_ctrl_handler() on its own thread while the main loop is
+           still going, then ends the process. Same cleanup -- controller
+           un-hidden, vJoy released and removed, virtual pad removed. */
+        log_line("control pipe: quit requested -- closing the relay cleanly");
+        console_ctrl_handler(CTRL_CLOSE_EVENT);
+        ExitProcess(0);
+    }
+}
+
+/* Created on the main thread (so "ON" is only printed once it really
+   listens), then handed to control_pipe_thread.
+   Security: SYSTEM and admins full; INTERACTIVE (the logged-on user -- the
+   Stream Deck plugin runs unelevated) read+write. Without this the default
+   DACL on a pipe an elevated process creates gives a normal app read-only
+   access, so it could never send a command. Medium integrity label with
+   No-Write-Up and No-Read-Up: normal apps may use it, sandboxed low-
+   integrity ones (browser tabs) can't even open it. One instance only,
+   plus FIRST_PIPE_INSTANCE, so nothing else can sit on the same name. */
+static HANDLE control_pipe_create(void) {
+    PSECURITY_DESCRIPTOR sd = NULL;
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorA("D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)S:(ML;;NWNR;;;ME)",
+                                                               SDDL_REVISION_1, &sd, NULL)) {
+        log_line("control pipe: security descriptor failed (%lu) -- not started", (unsigned long)GetLastError());
+        return INVALID_HANDLE_VALUE;
+    }
+    SECURITY_ATTRIBUTES sa;
+    sa.nLength = sizeof(sa);
+    sa.lpSecurityDescriptor = sd;
+    sa.bInheritHandle = FALSE;
+    HANDLE pipe = CreateNamedPipeA(CONTROL_PIPE_NAME, PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
+                                   PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+                                   1, 512, 512, 2000, &sa);
+    DWORD e = GetLastError();
+    LocalFree(sd);
+    if (pipe == INVALID_HANDLE_VALUE)
+        log_line("control pipe: CreateNamedPipe failed (%lu)%s -- not started", (unsigned long)e,
+                 e == ERROR_ACCESS_DENIED ? " -- the name is already in use (another relay running?)" : "");
+    else
+        log_line("control pipe: listening on %s", CONTROL_PIPE_NAME);
+    return pipe;
+}
+
+static DWORD WINAPI control_pipe_thread(LPVOID arg) {
+    HANDLE pipe = (HANDLE)arg;
+    HANDLE ev = CreateEventA(NULL, TRUE, FALSE, NULL);
+    int fails = 0;
+    if (!ev) {
+        CloseHandle(pipe);
+        return 0;
+    }
+    for (;;) {
+        OVERLAPPED ov;
+        DWORD dummy = 0, e = 0;
+        memset(&ov, 0, sizeof(ov));
+        ov.hEvent = ev;
+        ResetEvent(ev);
+        BOOL ok = ConnectNamedPipe(pipe, &ov);
+        if (!ok) {
+            e = GetLastError();
+            if (e == ERROR_IO_PENDING) {
+                ok = ipc_wait(pipe, &ov, &dummy, INFINITE);
+                if (!ok) e = GetLastError();
+            } else {
+                ok = e == ERROR_PIPE_CONNECTED;
+            }
+        }
+        if (ok) {
+            fails = 0;
+            ipc_handle_client(pipe, ev);
+        } else if (e != ERROR_NO_DATA) { /* ERROR_NO_DATA = a client that came and went: normal */
+            if (++fails >= 50) { /* something's persistently wrong: stop rather than ever spin a core */
+                log_line("control pipe: stopping after repeated errors (%lu) -- the relay itself is unaffected",
+                         (unsigned long)e);
+                break;
+            }
+            Sleep(100);
+        }
+        DisconnectNamedPipe(pipe);
+    }
+    CloseHandle(ev);
+    CloseHandle(pipe);
+    return 0;
+}
+#endif
+
 int main(int argc, char **argv) {
     /* First thing, unconditionally: cheap, side-effect-free, and several
        functions callable from many places below (vigem_teardown(),
@@ -6888,6 +7312,46 @@ int main(int argc, char **argv) {
         load_config(&mods, &vk, &mask, &hold_ms, gamepath, sizeof(gamepath));
         CHECK(vk == VK_F5 && mask == 0, "button=none with a real hotkey -> only the button combo stays disabled");
 
+        test = fopen(cfgpath, "w");
+        if (test) {
+            fprintf(test, "discord_button=dpad_down\n");
+            fclose(test);
+        }
+        g_vjoy_passthrough = 0;
+        load_config(&mods, &vk, &mask, &hold_ms, gamepath, sizeof(gamepath));
+        CHECK(g_vjoy_passthrough == XINPUT_GAMEPAD_DPAD_DOWN, "discord_button=dpad_down -> D-pad down passes through");
+        test = fopen(cfgpath, "w");
+        if (test) {
+            fprintf(test, "discord_button=lt+a+dpad_down\n");
+            fclose(test);
+        }
+        g_vjoy_passthrough = XINPUT_GAMEPAD_Y; /* sentinel: only a real load can replace it */
+        load_config(&mods, &vk, &mask, &hold_ms, gamepath, sizeof(gamepath));
+        CHECK(g_vjoy_passthrough == (XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_DPAD_DOWN),
+              "discord_button ignores triggers (plain buttons only)");
+        save_config(mods, vk, mask, hold_ms, gamepath);
+        g_vjoy_passthrough = 0;
+        load_config(&mods, &vk, &mask, &hold_ms, gamepath, sizeof(gamepath));
+        CHECK(g_vjoy_passthrough == (XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_DPAD_DOWN), "discord_button (two buttons) survives a save + reload");
+        test = fopen(cfgpath, "w");
+        if (test) {
+            fprintf(test, "discord_button=none\n");
+            fclose(test);
+        }
+        load_config(&mods, &vk, &mask, &hold_ms, gamepath, sizeof(gamepath));
+        CHECK(g_vjoy_passthrough == 0, "discord_button=none -> off");
+        {
+            int ok = 0;
+            for (size_t i = 0; i + 12 <= sizeof(VJOY_HID_REPORT_DESCRIPTOR); i++) {
+                const BYTE *d = VJOY_HID_REPORT_DESCRIPTOR + i;
+                if (d[0] == 0x19 && d[1] == 0x01 && d[2] == 0x29 && d[4] == 0x75 && d[5] == 0x01 && d[6] == 0x95 &&
+                    d[8] == 0x81 && d[10] == 0x75)
+                    ok = d[3] == VJOY_DESCRIPTOR_BUTTONS && d[7] == VJOY_DESCRIPTOR_BUTTONS && d[3] + d[11] == 128;
+            }
+            CHECK(ok && VJOY_DISCORD_BTN <= VJOY_DESCRIPTOR_BUTTONS,
+                  "vJoy descriptor: 20 buttons + padding = 128 bits, Discord button inside it");
+        }
+
         if (saved) {
             FILE *restore = fopen(cfgpath, "wb");
             if (restore) {
@@ -6897,6 +7361,28 @@ int main(int argc, char **argv) {
             free(saved);
         } else {
             remove(cfgpath); /* no real config existed before this test -- don't leave one behind */
+        }
+
+        printf("== parse_ipc_command (control pipe) ==\n");
+        CHECK(parse_ipc_command("status") == IPC_CMD_STATUS, "status");
+        CHECK(parse_ipc_command("MODE HOTAS\r\n") == IPC_CMD_MODE_HOTAS, "case and CRLF ignored");
+        CHECK(parse_ipc_command("  pad ds4  ") == IPC_CMD_PAD_DS4, "surrounding spaces ignored");
+        CHECK(parse_ipc_command("mode toggle") == IPC_CMD_MODE_TOGGLE && parse_ipc_command("mode normal") == IPC_CMD_MODE_NORMAL,
+              "mode toggle / normal");
+        CHECK(parse_ipc_command("freelook toggle") == IPC_CMD_FL_TOGGLE && parse_ipc_command("freelook off") == IPC_CMD_FL_OFF,
+              "freelook toggle / off");
+        CHECK(parse_ipc_command("input") == IPC_CMD_INPUT && parse_ipc_command("QUIT\n") == IPC_CMD_QUIT, "input / quit");
+        CHECK(parse_ipc_command("quit now") == IPC_CMD_BAD, "quit takes no arguments");
+        CHECK(parse_ipc_command("mode") == IPC_CMD_BAD, "incomplete command rejected");
+        CHECK(parse_ipc_command("hide") == IPC_CMD_BAD && parse_ipc_command("unhide") == IPC_CMD_BAD,
+              "no hide/unhide command exists");
+        CHECK(parse_ipc_command("mode hotas launch") == IPC_CMD_BAD, "extra words rejected");
+        CHECK(parse_ipc_command("") == IPC_CMD_BAD && parse_ipc_command(NULL) == IPC_CMD_BAD, "empty / NULL rejected");
+        {
+            char longcmd[200];
+            memset(longcmd, 'a', sizeof(longcmd) - 1);
+            longcmd[sizeof(longcmd) - 1] = '\0';
+            CHECK(parse_ipc_command(longcmd) == IPC_CMD_BAD, "overlong input rejected");
         }
 
 #undef CHECK
@@ -7032,6 +7518,13 @@ int main(int argc, char **argv) {
     format_button_combo(button_str, sizeof(button_str), g_toggle_button_mask, g_toggle_hold_ms);
     printf("Toggle mode with: %s, or controller %s. Press R any time to change either live.\n", hotkey_str,
            button_str);
+    if (g_vjoy_passthrough) {
+        char pass_str[48];
+        format_button_combo(pass_str, sizeof(pass_str), g_vjoy_passthrough, 0);
+        printf("Discord button: %s presses vJoy button %d in Normal mode (discord_button=).\n", pass_str, VJOY_DISCORD_BTN);
+        if (g_vjoy_passthrough & g_toggle_button_mask)
+            printf("Warning: discord_button= shares a button with the mode toggle, so switching modes can also press it.\n");
+    }
     printf("Run this program with --unhide any time to force the controller visible again (e.g. after a "
             "crash left it hidden).\n\n");
 
@@ -7043,6 +7536,18 @@ int main(int argc, char **argv) {
             CloseHandle(pump);
         }
     }
+#ifndef SAFE_MODE_NO_EXTRAS
+    if (g_control_pipe_enabled) { /* best effort: the relay works exactly the same without it */
+        HANDLE ctlPipe = control_pipe_create();
+        HANDLE ctlThread = ctlPipe != INVALID_HANDLE_VALUE ? CreateThread(NULL, 0, control_pipe_thread, ctlPipe, 0, NULL) : NULL;
+        if (ctlThread) CloseHandle(ctlThread);
+        else if (ctlPipe != INVALID_HANDLE_VALUE) CloseHandle(ctlPipe);
+        printf("Stream Deck / macro-pad control: %s\n\n", ctlThread ? "ON (control_pipe=on)"
+               : "NOT available -- see driver_install_log.txt (another relay already running?)");
+    }
+#else
+    if (g_control_pipe_enabled) printf("Stream Deck / macro-pad control: not in the SAFE build (control_pipe=on ignored)\n\n");
+#endif
 
     if (!pvJoyEnabled()) {
         fatal_exit("vJoy driver is not enabled/running. Check the vJoy Configuration app.");
@@ -7058,6 +7563,7 @@ int main(int argc, char **argv) {
     int was_ever_connected = 0;
     for (;;) {
         int userIndex = -1;
+        InterlockedExchange(&g_relay_state, RELAY_STATE_WAITING);
         int waiting_screen_shown = 0; /* render once per wait, not every 250ms poll -- a same-content
                                           full-screen clear+redraw 4x/sec reads as flashing/flicker,
                                           confirmed visibly worse over Windows Sandbox's display */
@@ -7122,6 +7628,9 @@ int main(int argc, char **argv) {
                     render_waiting_screen(rid, was_ever_connected);
                     waiting_screen_shown = 1;
                 }
+#ifndef SAFE_MODE_NO_EXTRAS
+                service_ipc_requests(0); /* free look on/off still works while waiting; pad swaps are dropped */
+#endif
                 Sleep(250);
             }
         }
@@ -7245,6 +7754,10 @@ int main(int argc, char **argv) {
         else if (backend == BACKEND_XINPUT) poll_xbox_battery(userIndex);
         update_ps_mode_led();
         clear_console();
+#ifndef SAFE_MODE_NO_EXTRAS
+        InterlockedExchange(&g_ipc_pad_want, -1); /* a pad request can never carry over into a new connection */
+#endif
+        InterlockedExchange(&g_relay_state, RELAY_STATE_CONNECTED);
 
         DWORD count = 0;
         int combo_was = 0, combo_fired = 0;
@@ -7255,6 +7768,8 @@ int main(int argc, char **argv) {
         XINPUT_GAMEPAD lastGamepad;
         memset(&lastGamepad, 0xFF, sizeof(lastGamepad)); /* guarantee the first read counts as "changed" */
         int lastPsSent = -1, lastTouchpadSent = -1; /* PS/touchpad live outside `gp`, so the change-check below needs them too */
+        WORD lastPassSent = 0;      /* discord_button= buttons last sent to vJoy in Normal mode -- see g_vjoy_passthrough */
+        WORD passArmed = 0;         /* discord_button= bits not held since the last mode change (a press must start in Normal mode) */
         LONG lastModeSent = -2; /* forces the first tick to count as "changed" regardless of g_hidden_mode's actual
                                     starting value (-1/0/1); also outside `gp`, same reasoning as PS/touchpad above --
                                     without this, toggling mode while the stick/a button is held doesn't mute/unmute
@@ -7405,7 +7920,9 @@ int main(int argc, char **argv) {
                 lockBtnWas = lockBtnNow;
                 ULONGLONG nowTick = GetTickCount64();
 
-                if (modeNow != 1 && (lookLocked || lookLockArmed)) { /* left HOTAS mode: nothing to keep locked */
+                if ((modeNow != 1 || !g_freelook_enabled) && (lookLocked || lookLockArmed)) {
+                    /* left HOTAS mode, or free look just got turned off over the control pipe: nothing to
+                       keep locked -- without the second check a lock would keep Left Alt held system-wide */
                     lookLocked = lookLockArmed = 0;
                     look_changed = 1;
                 }
@@ -7474,6 +7991,14 @@ int main(int argc, char **argv) {
                    vigem_update()'s own default -- both outputs live until a
                    mode is actively chosen, not neither. */
                 int vjoy_muted = g_hidden_mode == 0;
+                WORD vjoyPass = 0; /* always 0 unless discord_button= is set */
+                if (g_vjoy_passthrough) {
+                    /* Only a press that starts in Normal mode counts: one still held from
+                       HOTAS mode (or from before a reconnect) waits until it's let go. */
+                    if (mode_changed) passArmed = (WORD)~gp.wButtons;
+                    else passArmed |= (WORD)~gp.wButtons;
+                    if (vjoy_muted) vjoyPass = (WORD)(gp.wButtons & g_vjoy_passthrough & passArmed);
+                }
                 /* vJoy specifically (not ViGEmBus, not the dashboard --
                    both stay correct off the same gp values) reads Y
                    backwards vs. XInput/ViGEmBus -- negating it here,
@@ -7510,7 +8035,7 @@ int main(int argc, char **argv) {
                    the thread holding it, so vigem_update()'s own internal
                    Enter/Leave below doesn't deadlock against this outer one. */
                 EnterCriticalSection(&g_output_lock);
-                if (!vjoy_muted || mode_changed) {
+                if (!vjoy_muted || mode_changed || vjoyPass != lastPassSent) {
                     SHORT nly = gp.sThumbLY == -32768 ? 32767 : (SHORT)(-gp.sThumbLY);
                     SHORT nry = gp.sThumbRY == -32768 ? 32767 : (SHORT)(-gp.sThumbRY);
                     /* Built as one whole report and sent in a single call --
@@ -7573,6 +8098,8 @@ int main(int argc, char **argv) {
                                                                 : (gp.wButtons & phys) != 0;
                         if (pressed) g_vjoy_pos.lButtons |= 1L << b;
                     }
+                    /* discord_button=: button 18 only, Normal mode only (vjoyPass is always 0 in HOTAS mode) */
+                    if (vjoyPass) g_vjoy_pos.lButtons |= 1L << (VJOY_DISCORD_BTN - 1);
                     /* Look left/right as held buttons -- see FREELOOK_USE_BUTTONS. */
                     if (FREELOOK_USE_BUTTONS && !FREELOOK_USE_MOUSE && lookHeld && !vjoy_muted) {
                         int x = gp.sThumbRX;
@@ -7589,6 +8116,7 @@ int main(int argc, char **argv) {
                        change right now, like always. */
                     if (g_vjoy_acquired && !lookHeld) vjoy_send_position(rid, &g_vjoy_pos);
                     InterlockedExchange(&g_vjoy_pump_live, !vjoy_muted);
+                    lastPassSent = vjoyPass;
                 }
 
                 /* The other half of the same mutual-exclusivity: same
@@ -7667,19 +8195,29 @@ int main(int argc, char **argv) {
                 }
 
                 render_dashboard(&gp, count / elapsed, rid);
+#ifndef SAFE_MODE_NO_EXTRAS
+                g_ipc_gp = gp; /* control pipe: the snapshot the dashboard bars just drew -- see g_ipc_gp */
+                g_ipc_ps = g_ps_pressed;
+#endif
                 count = 0;
                 lastPrint = now;
 
                 char key = check_console_keypress();
                 if (key == 'R') {
+                    InterlockedExchange(&g_relay_state, RELAY_STATE_MENU);
                     run_remap_flow(backend, userIndex);
+                    InterlockedExchange(&g_relay_state, RELAY_STATE_CONNECTED);
                     QueryPerformanceCounter(&lastPrint);
                 } else if (key == 'G') {
+                    InterlockedExchange(&g_relay_state, RELAY_STATE_MENU);
                     if (g_game_path[0] == '\0') run_set_game_flow();
                     else launch_game();
+                    InterlockedExchange(&g_relay_state, RELAY_STATE_CONNECTED);
                     QueryPerformanceCounter(&lastPrint);
                 } else if (key == 'M') {
+                    InterlockedExchange(&g_relay_state, RELAY_STATE_MENU);
                     run_button_map_flow(backend, userIndex);
+                    InterlockedExchange(&g_relay_state, RELAY_STATE_CONNECTED);
                     QueryPerformanceCounter(&lastPrint);
                 } else if (FREELOOK_USE_MOUSE && g_freelook_enabled && (key == '+' || key == '=' || key == '-' || key == '_')) {
                     /* Mouse free-look speed, live, 20% steps -- see FREELOOK_USE_MOUSE.
@@ -7708,11 +8246,20 @@ int main(int argc, char **argv) {
                     clear_console();
                     QueryPerformanceCounter(&lastPrint);
                 }
+#ifndef SAFE_MODE_NO_EXTRAS
+                if (service_ipc_requests(1)) { /* control pipe: same as the V key when it swapped the pad */
+                    clear_console();
+                    QueryPerformanceCounter(&lastPrint);
+                }
+#endif
             }
 
             cpu_relax(); /* spin straight back to the next poll -- no Sleep */
         }
 
+        InterlockedExchange(&g_relay_state, RELAY_STATE_WAITING); /* controller gone: the control pipe refuses pad
+                                                                      commands from here on, and status stops
+                                                                      saying "connected" during the cleanup below */
         if (backend == BACKEND_DINPUT && g_di_device) IDirectInputDevice8_Unacquire(g_di_device);
         /* The rumble callbacks stay registered while nothing is connected
            now (the virtual pad outlives the controller) -- point them at

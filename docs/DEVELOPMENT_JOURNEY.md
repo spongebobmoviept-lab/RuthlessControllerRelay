@@ -249,6 +249,26 @@ One more real, separate wrinkle surfaced and was deliberately left unsolved by d
 
 **Also learned:** the Xbox **Share** button can't be used as a relay button. Standard Xbox controller input has no Share at all. It only exists on the controller's raw HID side, and Windows only delivers that to the app in the foreground. A background reader got zero reports even for ordinary button presses.
 
+### Stream Deck control without touching the controller path (v1.2.0)
+
+The goal was to show and switch the relay from a Stream Deck. The obvious route, a Stream Deck button that sends the relay's hotkey, fails exactly when it matters. The relay runs elevated, and so do many games and launchers, and Windows' UIPI blocks keystrokes from a normal-integrity app into a higher-integrity window. So the relay now optionally listens on a named pipe instead. It's built to be impossible to notice from the controller's point of view:
+
+- **It isn't in the input loop.** The pipe has its own thread, which only parses text and records requests.
+  - Mode changes are a single atomic compare-and-swap, the same variable the hotkey flips.
+  - Pad-type and free-look requests are "last request wins" slots. The main loop applies them in its existing ~15 Hz dashboard step, never in the read-and-forward path.
+  - Live input for display is a 12-byte copy taken in that same dashboard step, from the sample the dashboard just drew. The controller-to-game path does no extra work at all.
+- **A pad switch is refused unless a controller is connected.** The relay's state flips to "waiting" the instant the connected loop ends. This keeps the v1.0.1 bug class out: a virtual pad being re-created while nothing real is attached.
+- **Elevated server, unelevated clients.** The pipe gets an explicit security descriptor. SYSTEM and Administrators have full access, interactive users get read/write, and a medium mandatory-integrity label lets a normal-integrity Stream Deck connect at all. `PIPE_REJECT_REMOTE_CLIENTS` keeps it local. It has a single instance, strict line parsing, a 1-second read timeout, and backoff on errors.
+- **It's off by default and absent from the `_SAFE` build.**
+
+The Discord button followed from a real use. In Normal mode the game reads the virtual Xbox pad, and vJoy is kept silent so it never sees input twice. But Discord's keybinds can't see the Xbox pad. The first version re-enabled the pressed button's own vJoy slot in Normal mode. Review caught two problems with that:
+- That slot was already bound to an in-game action, so the game would also see it.
+- A Discord bind on it would fire in HOTAS mode too.
+
+The shipped version presses a slot an Xbox controller never uses (button 18, the PlayStation touchpad's slot) and only in Normal mode. It arms only on presses that begin in Normal mode.
+
+A 21st vJoy button was considered and rejected. Changing the device descriptor makes every switch between builds re-run the driver-configuration path on launch, a cost the default build shouldn't pay for an opt-in feature.
+
 ## What works and what doesn't
 
 The full, plain-English breakdown — connection type by connection type, with a "why" for each real limitation — lives in two places:

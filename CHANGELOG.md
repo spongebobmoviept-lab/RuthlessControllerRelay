@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.2.0 — 2026-10-05
+
+### Added
+- **Stream Deck and macro-pad control (optional, off by default).** Set `control_pipe=on` in the ini, and a Stream Deck, any macro pad or a script can:
+  - switch HOTAS/Normal mode,
+  - flip the virtual pad between Xbox and PlayStation,
+  - turn free look on or off,
+  - read the mode, controller, battery and live input,
+  - close the relay cleanly.
+
+  It works while an administrator game has focus, where keyboard shortcuts sent by other apps are blocked. It runs over a local-only pipe that understands just these commands. Commands are applied between controller reads, so input is untouched. The `_SAFE` build leaves it out. Guide: [docs/STREAM_DECK.md](docs/STREAM_DECK.md).
+- **`RelayControl.exe`**: sends one of those commands from a Stream Deck button, a shortcut or a script (`RelayControl.exe mode toggle`). No admin prompt, no window.
+- **Discord button in Normal mode (optional, off by default).** Discord's keybinds can't see the virtual Xbox pad, so Normal mode had no controller button Discord could bind. With `discord_button=dpad_down`, D-pad down in Normal mode also presses virtual-joystick button 18. Nothing else uses it on an Xbox controller, and typical game joystick bindings don't either. Bind Discord's Toggle Mute to it. HOTAS mode is unchanged. A press only counts if it starts in Normal mode. Details: [docs/STREAM_DECK.md § Discord button](docs/STREAM_DECK.md#discord-button-in-normal-xbox-mode).
+
+### Changed
+- Nothing changes unless you turn these on. With `control_pipe` and `discord_button` left at their defaults, the relay behaves exactly like v1.1.0, and the virtual joystick is identical: same 20 buttons, same axes.
+
 ## v1.1.0 — 2026-10-02
 
 ### Added

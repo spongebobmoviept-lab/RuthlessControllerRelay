@@ -5846,7 +5846,8 @@ static void run_head_setup_flow(void) {
     set_color(CLR_YELLOW_BR);
     printf("NOTICE: this sends your head movement to the game as mouse movement from\n");
     printf("software. Anti-cheat that studies mouse input could treat that as suspicious.\n");
-    printf("No bans are known, but nobody can promise that. Use it at your own risk.\n\n");
+    printf("One player using a head tracker has reported a ban, and nobody can promise it's safe.\n");
+    printf("Use it at your own risk.\n\n");
     set_color(CLR_NORMAL);
 
     if (!ht_files_present()) {

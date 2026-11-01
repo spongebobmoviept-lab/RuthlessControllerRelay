@@ -46,7 +46,7 @@
 
 ### Added
 - **[Head tracking](docs/HEAD_TRACKING.md) (optional, off until you turn it on).** Turn your head and the camera follows, using any webcam. Press `H` in the relay window to set it up: it offers to install opentrack, lets you pick your camera and game, and sets everything else up itself. Press `H` again any time to change either. The relay runs opentrack only while free look is set to head.
-  - **Anti-cheat notice:** it sends your head movement to the game as software mouse movement, constantly. No bans are known, but use it at your own risk.
+  - **Anti-cheat notice:** it sends your head movement to the game as software mouse movement, constantly. One player using a head tracker has reported a ban for hacking, and the game studio's CEO said its detection may have seen it as inhuman mouse movement. There's no official rule or outcome yet, so nobody can promise it's safe. Use it at your own risk.
   - It only moves the mouse in HOTAS mode, while the game you picked is focused, your cursor is over it, and the game has hidden the cursor. So your desktop, other programs and in-game menus are left alone.
   - Tap `RB` to recenter. Hold `RB` to pause your head and steer with the stick, and let go to return to where your head has it. `RB` + `R3` freezes the camera.
 - **HEAD box in the relay window.** A dot shows where you're pointing, with a word for what it's doing. No extra rows of numbers or windows.

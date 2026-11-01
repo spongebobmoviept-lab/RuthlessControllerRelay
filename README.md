@@ -14,7 +14,7 @@ Full rumble, lightbar/LED color, and battery reporting, wherever the hardware an
 
 **[⬇️ Download the latest version](../../releases/latest)** · [Older versions](#versions-and-whats-different)
 
-[How it works](#how-it-works) · [What's new](#whats-new) · [Versions](#versions-and-whats-different) · [Quick start](#quick-start) · [Controls](#controls) · [Free look](#free-look-hotas-mode) · [Head tracking](docs/HEAD_TRACKING.md) · [Updates](#updates) · [Stream Deck](#stream-deck-and-macro-pad-control) · [Compatibility](#what-works-and-what-doesnt) · [Is this safe?](#is-this-safe-to-run) · [Building](#building-from-source) · [Credits](#credits)
+[FAQ](docs/FAQ.md) · [How it works](#how-it-works) · [What's new](#whats-new) · [Versions](#versions-and-whats-different) · [Quick start](#quick-start) · [Controls](#controls) · [Free look](#free-look-hotas-mode) · [Head tracking](docs/HEAD_TRACKING.md) · [Updates](#updates) · [Stream Deck](#stream-deck-and-macro-pad-control) · [Compatibility](#what-works-and-what-doesnt) · [Is this safe?](#is-this-safe-to-run) · [Building](#building-from-source) · [Credits](#credits)
 
 </div>
 
@@ -70,6 +70,8 @@ All the driver work is done by other people's projects: **[vJoy](https://github.
 
 ## What's new
 
+- **Sticks dead in HOTAS mode? Fixed in v1.4.1.** The relay could end up listening to the wrong device. There's a new tool in the zip, `JoystickDoctor.exe`, that lists every joystick Windows knows about and clears old leftovers. See the [FAQ](docs/FAQ.md).
+
 <p align="center"><img src="docs/images/dashboard-head-tracking.png" alt="The relay window in HOTAS mode with head tracking on. The HEAD box beside the stick bars shows a dot where the player's head is pointing" width="640"></p>
 
 - **🎯 [Head tracking](docs/HEAD_TRACKING.md).** Turn your head and the camera follows, using any webcam. Press `H` in the relay window to set it up. Everything it needs comes in the download. Off until you turn it on.
@@ -85,7 +87,8 @@ Every published version stays up on the **[Releases page](../../releases)**, so 
 
 | Version | Released | What's different |
 |---|---|---|
-| **[v1.4.0](../../releases/tag/v1.4.0)** (latest) | 2026-11-01 | Head tracking is built into the relay, written in C, with no opentrack: no extra program, window or tray icon. The camera is only on while your game runs in HOTAS mode, virtual cameras work, and the zip drops to about 18 MB. opentrack's window for tuning, and TrackIR-style hardware, are gone |
+| **[v1.4.1](../../releases/tag/v1.4.1)** (latest) | 2026-11-01 | Fixes the relay listening to the wrong device, which left the sticks dead in HOTAS mode. Adds JoystickDoctor, a tool that lists every joystick and clears old leftovers |
+| **[v1.4.0](../../releases/tag/v1.4.0)** | 2026-11-01 | Head tracking is built into the relay, written in C, with no opentrack: no extra program, window or tray icon. The camera is only on while your game runs in HOTAS mode, virtual cameras work, and the zip drops to about 18 MB. opentrack's window for tuning, and TrackIR-style hardware, are gone |
 | **[v1.3.1](../../releases/tag/v1.3.1)** | 2026-11-01 | Head tracking needs no install: a trimmed opentrack runs from a folder beside the relay. Fixes hiding the real controller on a fresh PC. The SAFE build no longer shows keys it doesn't have. Rewritten home page and cheat sheet |
 | **[v1.3.0](../../releases/tag/v1.3.0)** | 2026-11-01 | Head tracking with any webcam, the HEAD box, a GitHub update check you can turn off, and opening the relay twice now brings up the first one. Comes with opentrack's full installer, so the zip is about 190 MB. Has the fresh-PC bug that v1.3.1 fixes |
 | **[v1.2.0](../../releases/tag/v1.2.0)** | 2026-10-05 | Stream Deck, macro-pad and script control. A controller button for Discord mute in Normal mode |
@@ -96,6 +99,8 @@ Every published version stays up on the **[Releases page](../../releases)**, so 
 Every change in detail: **[CHANGELOG.md](CHANGELOG.md)**.
 
 ## Quick start
+
+**Sticks doing nothing?** See the **[FAQ](docs/FAQ.md)**.
 
 1. Download the [latest release](../../releases/latest) and unzip it, or [build it yourself](#building-from-source). The zip has everything: the relay, its drivers, and what head tracking needs.
 2. **Using Steam?** [Disable Steam Input](docs/KNOWN_LIMITATIONS.md#steam-input-must-be-disabled) for the game first.
@@ -253,6 +258,11 @@ Copy `third_party/vigem_client/ViGEmClient.dll` next to the built exe, and copy 
 ```sh
 zig cc -target x86_64-windows-gnu -O2 -Wall -Wextra -Wl,--subsystem,windows -s \
     -o RelayControl.exe src/relay_control.c
+```
+
+`JoystickDoctor.exe`, the tool that lists joysticks and clears old leftovers, is one more:
+```sh
+zig cc -target x86_64-windows-gnu -O2 -Wall -Wextra -s -o JoystickDoctor.exe src/joystick_doctor.c     -ldinput8 -ldxguid -lole32 -lsetupapi -lcfgmgr32 -ladvapi32 -lshell32 -luser32
 ```
 
 Add `-DSAFE_MODE_NO_EXTRAS` to build a stripped-down fallback variant with no rumble, LED, battery, head tracking, update check or Stream Deck control compiled in — a minimal, maximally conservative build for if the full one ever misbehaves on a specific machine.

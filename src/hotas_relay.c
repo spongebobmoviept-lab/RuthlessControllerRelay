@@ -103,8 +103,8 @@
    whether they still had the old build (see CHANGELOG.md). Bump this with
    every GitHub release. */
 #ifndef RELAY_VERSION /* a test can pretend to be an older version */
-#define RELAY_VERSION "1.4.0"
-#define RELAY_VERSION_W L"1.4.0"
+#define RELAY_VERSION "1.4.1"
+#define RELAY_VERSION_W L"1.4.1"
 #endif
 
 #ifndef HIDHIDE_CLI_INSTALLED /* a test can pretend HidHide's full installer never ran */
@@ -2778,6 +2778,18 @@ static int g_di_candidate_count = 0;
    g_vigem_xinput_slot's comment). Positive answers are cached by instance
    GUID so the 4x/sec wait loop doesn't reopen the same virtual device
    every pass. */
+/* An "ig_" in the path is Microsoft's own mark for a pad that speaks XInput.
+   Issue #11: a GameSir on its dongle shows up in DirectInput a moment before
+   its XInput slot answers, so the wait loop could settle on the DirectInput
+   side of it: "generic DirectInput", all axes centered, Updates/sec 0.0, the
+   real pad left unhidden, and nothing ever looks at XInput again. These pads
+   belong to the XInput scan, which picks them up on its next pass. */
+static int di_path_is_xinput(const char *path) {
+    for (const char *p = path; p[0] && p[1] && p[2]; p++)
+        if (tolower((unsigned char)p[0]) == 'i' && tolower((unsigned char)p[1]) == 'g' && p[2] == '_') return 1;
+    return 0;
+}
+
 static int di_instance_is_vigem(const GUID *guidInstance) {
     static GUID known_virtual[8];
     static int known_count = 0;
@@ -2791,7 +2803,7 @@ static int di_instance_is_vigem(const GUID *guidInstance) {
     if (SUCCEEDED(IDirectInputDevice8_GetProperty(dev, DIPROP_GUIDANDPATH, &gp.diph))) {
         char path[MAX_PATH];
         if (WideCharToMultiByte(CP_ACP, 0, gp.wszPath, -1, path, sizeof(path), NULL, NULL) > 0)
-            is_virtual = interface_path_is_vigem_child(path);
+            is_virtual = interface_path_is_vigem_child(path) || di_path_is_xinput(path);
     }
     IDirectInputDevice8_Release(dev);
     if (is_virtual && known_count < 8) known_virtual[known_count++] = *guidInstance;
@@ -4321,21 +4333,16 @@ static int setup_dinput_device(void) {
         return 0;
     if (g_di_candidate_count == 0) return 0; /* nothing found */
 
-    /* Default: the first candidate, same as this project's original
-       "grab the first one" behavior -- correct whenever there's only one,
-       which is the overwhelmingly common case. Only probed further below
-       when there's more than one to tell apart. */
-    int chosenIdx = 0;
-    if (g_di_candidate_count > 1) {
-        /* Ambiguous: see the big comment above enum_joystick_cb() for why
-           this can happen on real hardware. Prefer the first candidate
-           that actually proves live; if none do within the timeout, fall
-           back to candidate 0 -- no worse than this project's original
-           behavior in that edge case. */
-        for (int i = 0; i < g_di_candidate_count; i++) {
-            if (di_candidate_is_live(&g_di_candidates[i].instance)) { chosenIdx = i; break; }
-        }
+    /* Take the first candidate that proves live, even when there's only one:
+       see the big comment above enum_joystick_cb() for dead instances, and
+       issue #11 for what settling on one looks like. None live means keep
+       waiting. A joystick that only reports when moved gets picked up the
+       moment it's touched. */
+    int chosenIdx = -1;
+    for (int i = 0; i < g_di_candidate_count && chosenIdx < 0; i++) {
+        if (di_candidate_is_live(&g_di_candidates[i].instance)) chosenIdx = i;
     }
+    if (chosenIdx < 0) return 0;
     GUID guid = g_di_candidates[chosenIdx].instance;
     g_dinput_vid_pid = g_di_candidates[chosenIdx].vidPid; /* for describe_controller()'s model lookup */
 
@@ -6331,12 +6338,12 @@ static int destroy_vjoy_root_devices(void) {
             if (SetupDiCallClassInstaller(DIF_REMOVE, devInfo, &devInfoData)) {
                 removed++;
                 log_line("destroy_vjoy_root_devices: removed one vJoy device instance (%s)", instanceId);
-            } else {
-                log_line("destroy_vjoy_root_devices: DIF_REMOVE failed on %s (error %lu)", instanceId,
-                          (unsigned long)GetLastError());
+                found_one = 1;
+                break; /* the list is stale now -- re-fetch fresh rather than trust the remaining indices */
             }
-            found_one = 1;
-            break; /* the list is stale now -- re-fetch fresh rather than trust the remaining indices */
+            /* Failed: move on to the next one. Going round again would try this same one forever. */
+            log_line("destroy_vjoy_root_devices: DIF_REMOVE failed on %s (error %lu)", instanceId,
+                      (unsigned long)GetLastError());
         }
         SetupDiDestroyDeviceInfoList(devInfo);
         if (!found_one) break; /* nothing left matching -- done */

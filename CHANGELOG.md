@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.4.1 — 2026-11-01
+
+### Fixed
+- **The relay could listen to the wrong device.** If your controller was off or still waking up when the relay looked for it, the relay could settle on another joystick Windows listed, even a dead one, and never look again. The window said `generic DirectInput`, the `INPUT` box said `HOTAS` and `Updates/sec` stayed at `0.0`. Your sticks did nothing and your real controller stayed visible to the game. Now Xbox-style pads are only ever read through XInput, and the relay won't settle on a device that isn't sending anything. A joystick that only reports when it moves gets picked up the moment you touch it. ([#11](../../issues/11))
+- **Closing the relay could hang** if Windows kept refusing to remove the virtual joystick. It now moves on.
+
+### Added
+- **`JoystickDoctor.exe`** in the zip. It lists every joystick Windows knows about, shows which ones are really sending data, and offers to remove old leftovers. It never touches keyboards, mice or drivers. `--list` prints a report you can paste into an issue.
+- **[FAQ](docs/FAQ.md),** starting with what to do when the sticks do nothing.
+
 ## v1.4.0 — 2026-11-01
 
 ### Changed

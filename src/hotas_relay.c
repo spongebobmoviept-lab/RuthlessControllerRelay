@@ -103,8 +103,8 @@
    whether they still had the old build (see CHANGELOG.md). Bump this with
    every GitHub release. */
 #ifndef RELAY_VERSION /* a test can pretend to be an older version */
-#define RELAY_VERSION "1.4.0"
-#define RELAY_VERSION_W L"1.4.0"
+#define RELAY_VERSION "2.0.0-alpha"
+#define RELAY_VERSION_W L"2.0.0-alpha"
 #endif
 
 #ifndef HIDHIDE_CLI_INSTALLED /* a test can pretend HidHide's full installer never ran */
@@ -143,6 +143,23 @@ typedef enum { BACKEND_XINPUT, BACKEND_DINPUT, BACKEND_DS4_RAWHID, BACKEND_DUALS
    registration belongs to whichever thread called it. */
 static DWORD g_toggle_thread_id = 0;
 #define WM_APP_REMAP (WM_APP + 1)
+#ifndef SAFE_MODE_NO_EXTRAS
+static HWND g_ui_shell_hwnd = NULL;        /* the tray's hidden window, for what used to need the console's */
+static HWND g_ui_hwnd = NULL;              /* the main window, only while it's open */
+static HWND ui_owner_hwnd(void);           /* relay_ui.c */
+static void ui_console_force(void);        /* relay_ui.c */
+static void ui_tray_remove(void);          /* relay_ui.c */
+static volatile LONG g_ui_tick = 0;        /* moves at 15 Hz while the loop is alive */
+static volatile LONG g_ui_rate = 0;        /* input changes per second */
+static volatile LONG g_ui_connecting = 0, g_ui_vjoy_busy = 0, g_ui_head_failed = 0, g_ui_hotkey_failed = 0;
+static int g_ui_cfg_console = 0, g_ui_cfg_tray = 0, g_ui_seen_tray_note = 0, g_ui_show_camera = 0;
+static volatile LONG g_ui_cfg_dirty = 0;   /* the shell thread saves the ini on its next tick */
+static LONG g_ui_cfg_mode = -1;            /* mode= in the ini: the last mode, remembered in window mode */
+static int g_ui_win_x = 0, g_ui_win_y = 0, g_ui_win_w = 0, g_ui_win_h = 0;
+#else
+#define ui_owner_hwnd() GetConsoleWindow()
+#define ui_console_force() ((void)0)
+#endif
 
 /* Path to a game exe to offer launching once the controller's ready --
    empty until set via the in-software "press G" flow (see
@@ -1646,7 +1663,19 @@ static DWORD WINAPI crash_logger_thread(LPVOID arg) {
     return 0;
 }
 
+#ifndef SAFE_MODE_NO_EXTRAS
+static volatile LONG g_ui_window_thread_id = 0;
+#endif
+
 static LONG WINAPI crash_filter(EXCEPTION_POINTERS *ep) {
+#ifndef SAFE_MODE_NO_EXTRAS
+    if (g_ui_window_thread_id && (DWORD)g_ui_window_thread_id == GetCurrentThreadId()) {
+        log_line("window: crashed with 0x%08lx at %p. The relay keeps running; reopen it from the tray.",
+                 (unsigned long)ep->ExceptionRecord->ExceptionCode, ep->ExceptionRecord->ExceptionAddress);
+        InterlockedExchange(&g_ui_window_thread_id, 0);
+        ExitThread(1);
+    }
+#endif
     freelook_release_alt(); /* first, before anything that could hang -- a stuck Alt breaks the whole keyboard */
     g_crash_info.exceptionCode = ep->ExceptionRecord->ExceptionCode;
     g_crash_info.exceptionAddress = ep->ExceptionRecord->ExceptionAddress;
@@ -1690,11 +1719,18 @@ static void get_config_path(char *path, size_t len) {
    both to create it fresh on first run and to save changes made through
    the in-software remap/set-game flows (R / G while the dashboard is up),
    so a friend never has to hand-edit this file for the normal case. */
+static CRITICAL_SECTION g_cfg_lock;
+
 static void save_config(UINT mods, UINT vk, DWORD button_mask, DWORD hold_ms, const char *game_path) {
-    char path[MAX_PATH + 32];
+    char path[MAX_PATH + 32], tmp[MAX_PATH + 40];
     get_config_path(path, sizeof(path));
-    FILE *out = fopen(path, "w");
-    if (!out) return;
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    EnterCriticalSection(&g_cfg_lock); /* the shell thread saves too, and a console key can land at the same moment */
+    FILE *out = fopen(tmp, "w");
+    if (!out) {
+        LeaveCriticalSection(&g_cfg_lock);
+        return;
+    }
 
     char hk[32], btn[48];
     format_hotkey(hk, sizeof(hk), mods, vk);
@@ -1861,7 +1897,16 @@ static void save_config(UINT mods, UINT vk, DWORD button_mask, DWORD hold_ms, co
         }
     }
     fprintf(out, "\n");
+#ifndef SAFE_MODE_NO_EXTRAS
+    /* 2.0 window. console=on starts as a console only, exactly like 1.x. */
+    fprintf(out, "#\n# The window: the last mode, where it sits, and whether it starts in the tray.\n");
+    if (g_ui_cfg_mode >= 0) fprintf(out, "mode=%s\n", g_ui_cfg_mode == 1 ? "hotas" : "normal");
+    if (g_ui_win_w > 0) fprintf(out, "ui_x=%d\nui_y=%d\nui_w=%d\nui_h=%d\n", g_ui_win_x, g_ui_win_y, g_ui_win_w, g_ui_win_h);
+    fprintf(out, "console=%s\nstart_tray=%s\nseen_tray_note=%d\nhead_show_camera=%s\n", g_ui_cfg_console ? "on" : "off", g_ui_cfg_tray ? "on" : "off", g_ui_seen_tray_note, g_ui_show_camera ? "on" : "off");
+#endif
     fclose(out);
+    MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+    LeaveCriticalSection(&g_cfg_lock);
 }
 
 static void load_config(UINT *mods_out, UINT *vk_out, DWORD *button_mask_out, DWORD *hold_ms_out,
@@ -1947,6 +1992,26 @@ static void load_config(UINT *mods_out, UINT *vk_out, DWORD *button_mask_out, DW
             strncpy(g_head_camera, p + 12, sizeof(g_head_camera) - 1);
             g_head_camera[sizeof(g_head_camera) - 1] = '\0';
             g_head_camera[strcspn(g_head_camera, "\r\n")] = '\0';
+#ifndef SAFE_MODE_NO_EXTRAS
+        } else if (!strncmp(p, "mode=", 5)) {
+            g_ui_cfg_mode = !strncmp(p + 5, "hotas", 5) ? 1 : !strncmp(p + 5, "normal", 6) ? 0 : -1;
+        } else if (!strncmp(p, "ui_x=", 5)) {
+            g_ui_win_x = atoi(p + 5);
+        } else if (!strncmp(p, "ui_y=", 5)) {
+            g_ui_win_y = atoi(p + 5);
+        } else if (!strncmp(p, "ui_w=", 5)) {
+            g_ui_win_w = atoi(p + 5);
+        } else if (!strncmp(p, "ui_h=", 5)) {
+            g_ui_win_h = atoi(p + 5);
+        } else if (!strncmp(p, "console=", 8)) {
+            g_ui_cfg_console = !strncmp(p + 8, "on", 2);
+        } else if (!strncmp(p, "start_tray=", 11)) {
+            g_ui_cfg_tray = !strncmp(p + 11, "on", 2);
+        } else if (!strncmp(p, "seen_tray_note=", 15)) {
+            g_ui_seen_tray_note = atoi(p + 15);
+        } else if (!strncmp(p, "head_show_camera=", 17)) {
+            g_ui_show_camera = !strncmp(p + 17, "on", 2);
+#endif
         } else if (!strncmp(p, "head_width=", 11)) {
             if (atoi(p + 11) > 0) g_head_width = atoi(p + 11);
         } else if (!strncmp(p, "head_height=", 12)) {
@@ -2070,10 +2135,12 @@ static DWORD WINAPI toggle_thread(LPVOID arg) {
      FOREGROUND_INTENSITY) /* white on bright magenta */
 
 static HANDLE g_console;
+static int g_console_done = 0;           /* console_init_once has run for the current console */
+static volatile LONG g_console_on = 1;   /* 0 while the window is the only face: nothing prints and no keys are read */
+static volatile LONG g_console_fresh = 0;/* the console just opened: the waiting screen needs drawing */
 
 static void console_init_once(void) {
-    static int done = 0;
-    if (done) return;
+    if (g_console_done) return;
     g_console = GetStdHandle(STD_OUTPUT_HANDLE);
     CONSOLE_CURSOR_INFO ci = {1, FALSE};
     SetConsoleCursorInfo(g_console, &ci); /* hide the blinking cursor for a cleaner look */
@@ -2119,7 +2186,7 @@ static void console_init_once(void) {
     if (GetConsoleMode(g_console, &mode)) SetConsoleMode(g_console, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
     printf("\x1b[?1049h\x1b[2J\x1b[H");
     fflush(stdout);
-    done = 1;
+    g_console_done = 1;
 }
 
 /* 0-indexed, like the COORD-based positioning this replaces -- ANSI itself
@@ -2134,6 +2201,7 @@ static void ansi_goto(int col, int row) { printf("\x1b[%d;%dH", row + 1, col + 1
 static int g_dash_was_too_small = -1; /* -1 = not known yet; clear_console() resets it, so the "too short" note comes back */
 
 static void clear_console(void) {
+    if (!g_console_on) return;
     console_init_once();
     g_dash_was_too_small = -1;
     printf("\x1b[2J\x1b[3J\x1b[H");
@@ -2225,10 +2293,16 @@ static int console_visible_rows(void) {
     return info.srWindow.Bottom - info.srWindow.Top + 1;
 }
 
+#ifdef SAFE_MODE_NO_EXTRAS
+static XINPUT_GAMEPAD lastGamepad;
+#endif
 #ifndef SAFE_MODE_NO_EXTRAS
 #include "head_tracker.c"
 
 /* What head tracking is doing right now. Also sent to the Stream Deck as hs=. */
+/* Set by the input loop on every real change, and read directly by the window. */
+static XINPUT_GAMEPAD lastGamepad;
+
 typedef enum { HEAD_ST_OFF = 0, HEAD_ST_NO_TRACKER, HEAD_ST_TRACKING, HEAD_ST_PAUSED, HEAD_ST_STICK, HEAD_ST_LOCKED } head_status_t;
 
 static head_status_t head_status(void) {
@@ -2376,6 +2450,7 @@ static const char *describe_controller(backend_t backend) {
    disconnects mid-session -- makes it obvious the software is alive and
    just waiting, and exactly what to do about it. */
 static void render_waiting_screen(UINT rid, int was_ever_connected) {
+    if (!g_console_on) return;
     clear_console();
 
     set_color(CLR_WHITE_BR);
@@ -2466,6 +2541,7 @@ static void print_dual_badge(void) {
 }
 
 static void render_dashboard(const XINPUT_GAMEPAD *gp, double updates_per_sec, UINT rid) {
+    if (!g_console_on) return;
     console_init_once();
 
     /* Edge-triggered (only clear+print on a CHANGE of state), not
@@ -2778,6 +2854,18 @@ static int g_di_candidate_count = 0;
    g_vigem_xinput_slot's comment). Positive answers are cached by instance
    GUID so the 4x/sec wait loop doesn't reopen the same virtual device
    every pass. */
+/* An "ig_" in the path is Microsoft's own mark for a pad that speaks XInput.
+   Issue #11: a GameSir on its dongle shows up in DirectInput a moment before
+   its XInput slot answers, so the wait loop could settle on the DirectInput
+   side of it: "generic DirectInput", all axes centered, Updates/sec 0.0, the
+   real pad left unhidden, and nothing ever looks at XInput again. These pads
+   belong to the XInput scan, which picks them up on its next pass. */
+static int di_path_is_xinput(const char *path) {
+    for (const char *p = path; p[0] && p[1] && p[2]; p++)
+        if (tolower((unsigned char)p[0]) == 'i' && tolower((unsigned char)p[1]) == 'g' && p[2] == '_') return 1;
+    return 0;
+}
+
 static int di_instance_is_vigem(const GUID *guidInstance) {
     static GUID known_virtual[8];
     static int known_count = 0;
@@ -2791,7 +2879,7 @@ static int di_instance_is_vigem(const GUID *guidInstance) {
     if (SUCCEEDED(IDirectInputDevice8_GetProperty(dev, DIPROP_GUIDANDPATH, &gp.diph))) {
         char path[MAX_PATH];
         if (WideCharToMultiByte(CP_ACP, 0, gp.wszPath, -1, path, sizeof(path), NULL, NULL) > 0)
-            is_virtual = interface_path_is_vigem_child(path);
+            is_virtual = interface_path_is_vigem_child(path) || di_path_is_xinput(path);
     }
     IDirectInputDevice8_Release(dev);
     if (is_virtual && known_count < 8) known_virtual[known_count++] = *guidInstance;
@@ -2827,7 +2915,7 @@ static int di_candidate_is_live(const GUID *guid) {
     if (FAILED(IDirectInput8_CreateDevice(g_di, guid, &dev, NULL))) return 0;
     int live = 0;
     if (SUCCEEDED(IDirectInputDevice8_SetDataFormat(dev, &c_dfDIJoystick2))) {
-        IDirectInputDevice8_SetCooperativeLevel(dev, GetConsoleWindow(), DISCL_NONEXCLUSIVE | DISCL_BACKGROUND);
+        IDirectInputDevice8_SetCooperativeLevel(dev, ui_owner_hwnd(), DISCL_NONEXCLUSIVE | DISCL_BACKGROUND);
         DIPROPDWORD bufSize = {.diph = {sizeof(bufSize), sizeof(bufSize.diph), 0, DIPH_DEVICE}, .dwData = 32};
         IDirectInputDevice8_SetProperty(dev, DIPROP_BUFFERSIZE, &bufSize.diph);
         if (SUCCEEDED(IDirectInputDevice8_Acquire(dev))) {
@@ -4321,21 +4409,16 @@ static int setup_dinput_device(void) {
         return 0;
     if (g_di_candidate_count == 0) return 0; /* nothing found */
 
-    /* Default: the first candidate, same as this project's original
-       "grab the first one" behavior -- correct whenever there's only one,
-       which is the overwhelmingly common case. Only probed further below
-       when there's more than one to tell apart. */
-    int chosenIdx = 0;
-    if (g_di_candidate_count > 1) {
-        /* Ambiguous: see the big comment above enum_joystick_cb() for why
-           this can happen on real hardware. Prefer the first candidate
-           that actually proves live; if none do within the timeout, fall
-           back to candidate 0 -- no worse than this project's original
-           behavior in that edge case. */
-        for (int i = 0; i < g_di_candidate_count; i++) {
-            if (di_candidate_is_live(&g_di_candidates[i].instance)) { chosenIdx = i; break; }
-        }
+    /* Take the first candidate that proves live, even when there's only one:
+       see the big comment above enum_joystick_cb() for dead instances, and
+       issue #11 for what settling on one looks like. None live means keep
+       waiting. A joystick that only reports when moved gets picked up the
+       moment it's touched. */
+    int chosenIdx = -1;
+    for (int i = 0; i < g_di_candidate_count && chosenIdx < 0; i++) {
+        if (di_candidate_is_live(&g_di_candidates[i].instance)) chosenIdx = i;
     }
+    if (chosenIdx < 0) return 0;
     GUID guid = g_di_candidates[chosenIdx].instance;
     g_dinput_vid_pid = g_di_candidates[chosenIdx].vidPid; /* for describe_controller()'s model lookup */
 
@@ -4349,7 +4432,7 @@ static int setup_dinput_device(void) {
     /* No real window to be exclusive/foreground for -- this is a console
        relay that should keep reading even while some other window (the
        game) has focus. */
-    IDirectInputDevice8_SetCooperativeLevel(g_di_device, GetConsoleWindow(), DISCL_NONEXCLUSIVE | DISCL_BACKGROUND);
+    IDirectInputDevice8_SetCooperativeLevel(g_di_device, ui_owner_hwnd(), DISCL_NONEXCLUSIVE | DISCL_BACKGROUND);
 
     static const DWORD stick_axes[] = {DIJOFS_X, DIJOFS_Y, DIJOFS_Z, DIJOFS_RX, DIJOFS_RY, DIJOFS_RZ};
     for (size_t i = 0; i < sizeof(stick_axes) / sizeof(stick_axes[0]); i++) {
@@ -5211,7 +5294,11 @@ static int run_set_game_flow(void) {
     char path[MAX_PATH] = {0};
     OPENFILENAMEA ofn = {0};
     ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = GetConsoleWindow();
+#ifndef SAFE_MODE_NO_EXTRAS
+    ofn.hwndOwner = g_ui_hwnd ? g_ui_hwnd : ui_owner_hwnd();
+#else
+    ofn.hwndOwner = ui_owner_hwnd();
+#endif
     ofn.lpstrFilter = "Programs (*.exe)\0*.exe\0All files\0*.*\0";
     ofn.lpstrFile = path;
     ofn.nMaxFile = sizeof(path);
@@ -5251,6 +5338,7 @@ static void launch_game(void) {
    unlike the toggle hotkey/button) and returns the last one pressed, or 0
    if none. Checked once per dashboard redraw, not the hot input path. */
 static char check_console_keypress(void) {
+    if (!g_console_on) return 0;
     HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
     INPUT_RECORD rec;
     DWORD n;
@@ -5797,6 +5885,7 @@ static DWORD WINAPI head_thread(LPVOID arg) {
             ht_stop();
             lastFail = GetTickCount();
         }
+        InterlockedExchange(&g_ui_head_failed, lastFail && GetTickCount() - lastFail <= 10000 && !ht_running());
         if (want && !ht_running() && (!lastFail || GetTickCount() - lastFail > 10000)) ht_start(g_head_camera, g_head_width, g_head_height, g_head_fps, head_pose_in);
         else if (!want && ht_running()) ht_stop();
         head_check_gap();
@@ -6104,9 +6193,9 @@ static void update_start_thread(void) {
    game/app just because this tool was closed rather than toggled back to
    Normal mode first. Windows allows a handler like this a few seconds to
    finish before forcing termination, plenty for one HidHideCLI call. */
-static BOOL WINAPI console_ctrl_handler(DWORD ctrl_type) {
-    (void)ctrl_type;
+static void relay_cleanup(void) {
 #ifndef SAFE_MODE_NO_EXTRAS
+    ui_tray_remove();
     ht_stop();
 #endif
     freelook_release_alt(); /* never leave Left Alt held down system-wide -- see FREELOOK_USE_MOUSE */
@@ -6123,6 +6212,11 @@ static BOOL WINAPI console_ctrl_handler(DWORD ctrl_type) {
     printf("\x1b[?1049l"); /* leave the alternate screen buffer -- see console_init_once() -- so the
                                terminal's normal prompt/history comes back instead of staying blank/stuck */
     fflush(stdout);
+}
+
+static BOOL WINAPI console_ctrl_handler(DWORD ctrl_type) {
+    (void)ctrl_type;
+    relay_cleanup();
     return FALSE; /* let Windows continue its normal shutdown afterward */
 }
 
@@ -6133,6 +6227,7 @@ static BOOL WINAPI console_ctrl_handler(DWORD ctrl_type) {
    read at all. Confirmed this actually happened ("ran two UAC then closed
    idk why"), which is exactly the failure mode this exists to prevent. */
 static void fatal_exit(const char *message) {
+    ui_console_force(); /* the message and the key wait both need somewhere to be */
     /* Same cleanup as console_ctrl_handler()'s clean-exit path, since
        vJoy's device is session-scoped now -- an error partway through
        startup (say, vJoy created and acquired but ViGEm failed to load
@@ -6331,12 +6426,12 @@ static int destroy_vjoy_root_devices(void) {
             if (SetupDiCallClassInstaller(DIF_REMOVE, devInfo, &devInfoData)) {
                 removed++;
                 log_line("destroy_vjoy_root_devices: removed one vJoy device instance (%s)", instanceId);
-            } else {
-                log_line("destroy_vjoy_root_devices: DIF_REMOVE failed on %s (error %lu)", instanceId,
-                          (unsigned long)GetLastError());
+                found_one = 1;
+                break; /* the list is stale now -- re-fetch fresh rather than trust the remaining indices */
             }
-            found_one = 1;
-            break; /* the list is stale now -- re-fetch fresh rather than trust the remaining indices */
+            /* Failed: move on to the next one. Going round again would try this same one forever. */
+            log_line("destroy_vjoy_root_devices: DIF_REMOVE failed on %s (error %lu)", instanceId,
+                      (unsigned long)GetLastError());
         }
         SetupDiDestroyDeviceInfoList(devInfo);
         if (!found_one) break; /* nothing left matching -- done */
@@ -7862,6 +7957,10 @@ static int another_relay_running(void) {
     return 0; /* first one: m stays open (held) until this process ends */
 }
 
+#ifndef SAFE_MODE_NO_EXTRAS
+#include "relay_ui.c"
+#endif
+
 int main(int argc, char **argv) {
     /* First thing, unconditionally: cheap, side-effect-free, and several
        functions callable from many places below (vigem_teardown(),
@@ -7870,6 +7969,10 @@ int main(int argc, char **argv) {
        main() removes any chance of an early-return CLI path reaching one
        of them before it exists. See g_output_lock's own comment. */
     InitializeCriticalSection(&g_output_lock);
+    InitializeCriticalSection(&g_cfg_lock);
+#ifndef SAFE_MODE_NO_EXTRAS
+    ui_early(&argc, argv);
+#endif
 
     /* Standalone escape hatch, independent of anything else below: if the
        controller was ever left hidden (this tool crashed, got killed from
@@ -8193,6 +8296,9 @@ int main(int argc, char **argv) {
         }
 #endif
 
+#ifndef SAFE_MODE_NO_EXTRAS
+        failed += ui_selftest();
+#endif
 #undef CHECK
         printf("\n%s (%d check%s failed)\n", failed ? "SOME CHECKS FAILED" : "ALL CHECKS PASSED", failed,
                 failed == 1 ? "" : "s");
@@ -8224,6 +8330,9 @@ int main(int argc, char **argv) {
        session, where a friend hitting a genuine crash is the whole
        reason this exists. */
     if (another_relay_running()) {
+#ifndef SAFE_MODE_NO_EXTRAS
+        if (ui_signal_running()) return 0; /* its window comes forward, nothing to say here */
+#endif
         printf("Ruthless Controller Relay is already running -- bringing it to the front.\n"
                "This window closes in a moment.\n");
         HWND other = NULL;
@@ -8261,8 +8370,17 @@ int main(int argc, char **argv) {
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
     SetConsoleCtrlHandler(console_ctrl_handler, TRUE);
 
+#ifndef SAFE_MODE_NO_EXTRAS
+    /* ponytail: first run and a pending reboot use the old console flows, which prompt
+       and read keys. A Welcome page replaces this when the alpha is liked. */
+    if (g_ui_windowed && (service_exists("vjoy") != 1 || service_exists("HidHide") != 1 || service_exists("ViGEmBus") != 1 || ui_reboot_marker_present())) ui_console_force();
+    ui_start();
+#endif
     check_pending_reboot();
     check_and_install_drivers();
+#ifndef SAFE_MODE_NO_EXTRAS
+    if (g_ui_windowed && g_console_on) ui_console_hide();
+#endif
 #ifndef SAFE_MODE_NO_EXTRAS
     printf(ht_files_present() ? "Head tracking: ready, nothing to install. H sets it up, F turns it on or off.\n\n"
                               : "Head tracking: the head_tracker folder is missing. It's in the full download.\n\n");
@@ -8338,6 +8456,9 @@ int main(int argc, char **argv) {
 
     load_config(&g_hotkey_mods, &g_hotkey_vk, &g_toggle_button_mask, &g_toggle_hold_ms, g_game_path,
                 sizeof(g_game_path));
+#ifndef SAFE_MODE_NO_EXTRAS
+    if (g_ui_windowed && g_ui_cfg_mode >= 0) InterlockedExchange(&g_hidden_mode, g_ui_cfg_mode);
+#endif
     char hotkey_str[32], button_str[48];
     format_hotkey(hotkey_str, sizeof(hotkey_str), g_hotkey_mods, g_hotkey_vk);
     format_button_combo(button_str, sizeof(button_str), g_toggle_button_mask, g_toggle_hold_ms);
@@ -8452,7 +8573,7 @@ int main(int argc, char **argv) {
                         break;
                     }
                 }
-                if (!waiting_screen_shown) {
+                if (!waiting_screen_shown || InterlockedExchange(&g_console_fresh, 0)) {
                     render_waiting_screen(rid, was_ever_connected);
                     waiting_screen_shown = 1;
                 }
@@ -8463,12 +8584,22 @@ int main(int argc, char **argv) {
             }
         }
 
+#ifndef SAFE_MODE_NO_EXTRAS
+        InterlockedExchange(&g_ui_connecting, 1);
+#endif
         if (!pAcquireVJD(rid)) {
             fprintf(stderr, "Could not acquire vJoy device #%u. Already owned, or doesn't exist? Retrying...\n", rid);
+#ifndef SAFE_MODE_NO_EXTRAS
+            InterlockedExchange(&g_ui_vjoy_busy, 1);
+            InterlockedExchange(&g_ui_connecting, 0);
+#endif
             Sleep(1000);
             backend = BACKEND_XINPUT; /* re-try XInput first on the next pass */
             continue;
         }
+#ifndef SAFE_MODE_NO_EXTRAS
+        InterlockedExchange(&g_ui_vjoy_busy, 0);
+#endif
         g_vjoy_acquired = 1; /* so fatal_exit()/console_ctrl_handler() know to relinquish before tearing the
                                  device down, if this process ends while still connected */
         was_ever_connected = 1;
@@ -8584,6 +8715,7 @@ int main(int argc, char **argv) {
         clear_console();
 #ifndef SAFE_MODE_NO_EXTRAS
         InterlockedExchange(&g_ipc_pad_want, -1); /* a pad request can never carry over into a new connection */
+        InterlockedExchange(&g_ui_connecting, 0);
 #endif
         InterlockedExchange(&g_relay_state, RELAY_STATE_CONNECTED);
 
@@ -8593,7 +8725,6 @@ int main(int argc, char **argv) {
         LARGE_INTEGER freq, lastPrint, now;
         QueryPerformanceFrequency(&freq);
         QueryPerformanceCounter(&lastPrint);
-        XINPUT_GAMEPAD lastGamepad;
         memset(&lastGamepad, 0xFF, sizeof(lastGamepad)); /* guarantee the first read counts as "changed" */
         int lastPsSent = -1, lastTouchpadSent = -1; /* PS/touchpad live outside `gp`, so the change-check below needs them too */
         WORD lastPassSent = 0;      /* discord_button= buttons last sent to vJoy in Normal mode -- see g_vjoy_passthrough */
@@ -9030,6 +9161,8 @@ int main(int argc, char **argv) {
 
                 render_dashboard(&gp, count / elapsed, rid);
 #ifndef SAFE_MODE_NO_EXTRAS
+                g_ui_rate = (LONG)(count / elapsed);
+                g_ui_tick++;
                 g_ipc_gp = gp; /* control pipe: the snapshot the dashboard bars just drew -- see g_ipc_gp */
                 g_ipc_ps = g_ps_pressed;
 #endif

@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.3.0 — 2026-11-01
+
+### Added
+- **[Head tracking](docs/HEAD_TRACKING.md) (optional, off until you turn it on).** Turn your head and the camera follows, using any webcam. Press `H` in the relay window to set it up: it offers to install opentrack, lets you pick your camera and game, and sets everything else up itself. Press `H` again any time to change either. The relay starts and stops opentrack on its own, so the webcam is only on while head tracking is.
+  - **Anti-cheat notice:** it sends your head movement to the game as software mouse movement, constantly. No bans are known, but use it at your own risk.
+  - It only moves the mouse in HOTAS mode, while the game you picked is focused, your cursor is over it, and the game has hidden the cursor. So your desktop, other programs and in-game menus are left alone.
+  - Tap `RB` to recenter. Hold `RB` to pause your head and steer with the stick, and let go to return to where your head has it. `RB` + `R3` freezes the camera.
+- **HEAD box in the relay window.** A dot shows where you're pointing, with a word for what it's doing. No extra rows of numbers or windows.
+- **`F` key:** switch free look between off, normal and head tracking.
+- **Update check.** Once per launch, the relay asks GitHub for the latest version number. If there's a newer one, the title line says so and `U` offers to install it, keeping your settings. It always asks first and tests the new version before swapping it in. Turn the check off with `C` or `update_check=off`. Not in the SAFE build.
+- **Single instance.** Opening the relay a second time brings the running one to the front.
+- **Discord's noise filter from a Stream Deck (optional, separate from the relay).** A small Vencord plugin in `extras/vencord-bridge/` switches Krisp with no window popping up. [Guide and notice](docs/STREAM_DECK.md#discords-noise-filter-from-a-stream-deck-vencord).
+- **Stream Deck and scripts:** `freelook head`, `freelook=head` in the status line, and `hs=`, `hx=`, `hy=` (head status and position) on the `input` reply.
+
+### Changed
+- **The zip now includes opentrack's installer**, so everything head tracking needs comes in one download. It's much bigger because of that: about 190 MB, up from 3 MB. Updates through the relay stay small.
+
+### Unchanged
+- With head tracking off, the path from your controller to the game is exactly as before. The virtual joystick is the same, so your game bindings keep working.
+
 ## v1.2.0 — 2026-10-05
 
 ### Added

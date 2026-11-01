@@ -269,6 +269,22 @@ The shipped version presses a slot an Xbox controller never uses (button 18, the
 
 A 21st vJoy button was considered and rejected. Changing the device descriptor makes every switch between builds re-run the driver-configuration path on launch, a cost the default build shouldn't pay for an opt-in feature.
 
+### Head tracking: mouse won, and what the game's reset does
+
+Head tracking was first designed around the virtual joystick: spare look axes, bound in the game, with no mouse involved. In testing the axes moved correctly at 1000 reports a second, verified with a raw HID read, but the camera didn't follow, and turning on the game's absolute joystick look broke normal free look. Mouse movement through the game's own free look worked right away, so that's what shipped. The joystick route was removed instead of being left in as an untested option.
+
+The head tracker itself isn't in this project. opentrack reads the webcam and sends its result over UDP to localhost, and the relay is the only thing that talks to the game. It's all on its own thread, and neither the thread nor the socket exist until head tracking is first used, so the controller path isn't touched.
+
+Things only real play found:
+
+- **The game's reset turned its free look off.** Tapping FreeLookReset with no Alt held made the camera stop following, while the relay was still sending. So head mode holds Left Alt the whole time the game has the mouse, and lets go of it just for the tap, the same order that already recentered normal free look. Tracking then survives a recenter.
+- **A focused game isn't a game you're using.** Focus alone moved the cursor around the desktop, because a game stays focused while you use the mouse on another monitor. Logging the cursor during play showed the game hides it while flying and shows it in menus and elsewhere, which turned out to be the rule that was needed: focused, cursor over it, and cursor hidden.
+- **Compiling during a test looked like a tracking bug.** One round felt clearly worse, with no change to the tracking code or its settings. That round was the one where builds were running during play. The next round, with nothing else running, was smooth again.
+- **Letting go of RB shouldn't move the center.** The camera's position is only ever a running total of mouse movement, so head mode counts what the stick added during a hold and sends exactly that back when you let go.
+- **Two things starting the tracker meant two trackers.** A Stream Deck plugin and the relay each checked whether opentrack was running and started it if not, so they could both start it at once. Now only the relay starts it.
+- **A pause with nothing on screen eats a key press.** The setup screen waited 2.5 seconds for the camera to come free before showing anything, so people pressed `H` again, and that press then cancelled the camera menu the moment it appeared. It now shows the screen first, throws away keys pressed during the wait, and never treats `H` as an answer.
+- **"Is the game focused" went by window type at first.** That worked in the game it was built on, but it would have matched every Unreal Engine game and no others. Now it's the `.exe` set in the relay. The name comes from the system's process list, so nothing opens a handle to the game.
+
 ## What works and what doesn't
 
 The full, plain-English breakdown — connection type by connection type, with a "why" for each real limitation — lives in two places:

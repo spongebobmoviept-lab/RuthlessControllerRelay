@@ -6,6 +6,24 @@ This project is genuinely a small addition on top of the real work below — a t
 
 ---
 
+## opentrack — head tracking
+
+**Repository:** https://github.com/opentrack/opentrack
+**Authors:** Stanislaw Halik and contributors
+**License:** ISC for almost all of its code, per its own README, with a few dependencies under their own terms. Full details: [OPENTRACK-LICENSING.txt](https://github.com/opentrack/opentrack/blob/master/OPENTRACK-LICENSING.txt) and its `3rdparty-notices` folder.
+
+opentrack reads the webcam and works out where your head is pointing. The release zip includes its **official, unmodified installer** (`opentrack-2026.1.0-win32-setup.exe`) for convenience. This project contains none of its source code and only talks to it over its documented UDP output. The installer comes straight from [opentrack's releases](https://github.com/opentrack/opentrack/releases/tag/opentrack-2026.1.0), which also has the source.
+
+```
+Copyright (c) 2012-2016 Stanislaw Halik
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+```
+
+---
+
 ## vJoy — the virtual joystick device
 
 **Repository:** https://github.com/shauleiz/vJoy

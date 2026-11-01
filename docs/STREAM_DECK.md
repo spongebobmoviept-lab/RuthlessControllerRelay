@@ -45,6 +45,7 @@ The release includes **`RelayControl.exe`**. It sends one command to the relay a
 | Normal mode | `mode normal` |
 | Xbox / PlayStation virtual pad | `pad toggle` |
 | Free look on / off | `freelook toggle` |
+| Head tracking on | `freelook head` |
 | Close the relay | `quit` |
 
 This works the same with any macro pad or launcher that can open a shortcut or run a program with arguments.
@@ -89,8 +90,8 @@ Commands (case-insensitive):
 | `status` | Nothing; reports the state | `ok v=… state=… mode=… pad=… padlive=… freelook=… look=… batt=… chg=… ctrl=…` |
 | `mode hotas` / `mode normal` / `mode toggle` | Switch mode | status line |
 | `pad x360` / `pad ds4` / `pad toggle` | Switch the virtual pad type (needs a connected controller) | status line, or `err no controller` |
-| `freelook on` / `freelook off` / `freelook toggle` | Free look on/off for this session (not saved to the ini) | status line |
-| `input` | Live controller sample | `ok lx= ly= rx= ry= lt= rt= btn= ps=` |
+| `freelook on` / `freelook off` / `freelook toggle` / `freelook head` | Free look on, off, or [head tracking](HEAD_TRACKING.md), for this session (not saved to the ini) | status line |
+| `input` | Live controller sample, plus head tracking | `ok lx= ly= rx= ry= lt= rt= btn= ps= hs= hx= hy=` |
 | `quit` | Close the relay cleanly, exactly like closing its window | `ok quitting` |
 
 Status fields:
@@ -102,7 +103,7 @@ Status fields:
 | `mode` | `hotas`, `normal`, `unset` (not picked yet since launch) |
 | `pad` | `x360` or `ds4`: the virtual pad type |
 | `padlive` | `1` if the virtual pad is live |
-| `freelook` | `on` / `off` |
+| `freelook` | `on` / `off` / `head` |
 | `look` | `idle`, `looking` (RB held), `locked` (camera locked with R3) |
 | `batt` | controller battery in %, or `-` if unknown / wired |
 | `chg` | `1` while charging |
@@ -149,3 +150,53 @@ Tapping the button now flips your Discord mute on and off in Normal mode.
 - **Don't use your mode-switch button(s).** The relay warns about this at startup.
 - **PlayStation controllers:** button 18 is the touchpad click by default, so in HOTAS mode the touchpad would also toggle Discord. That doesn't apply if the touchpad is your mode button, or if you move it with `M`.
 - `discord_button=none` turns it off. With it off, nothing about vJoy changes in either mode.
+
+---
+
+# Discord's noise filter from a Stream Deck (Vencord)
+
+**Optional, and separate from the relay.** The relay doesn't use this or need it. It's here because it goes well with a Stream Deck setup.
+
+## What it's for
+
+A key or script that switches Discord's Krisp noise filter on and off **in the background**. Discord doesn't come to the front, and whatever you're typing in keeps the keyboard. It can also tell you whether you're in a call, muted or deafened, so a key can show that.
+
+> **⚠️ Notice.** This uses [Vencord](https://github.com/Vendicated/Vencord), a Discord client mod. Client mods are against Discord's Terms of Service. Vencord's own README says there are no known bans for using them, and also says not to use one if losing your account would be a disaster. It's your account, so it's your call. This is an unofficial add-on, and neither Vencord nor Discord supports it. It can stop working after a Discord update.
+
+## How it works
+
+Discord has no outside control for Krisp, but inside Discord a plugin can call the same action Discord's own switch uses. So a small Vencord plugin opens a local pipe, `\\.\pipe\DiscordBridge`, and passes what it receives to Discord's window:
+
+| Send | Does |
+|---|---|
+| `status` | Nothing. Just answers |
+| `krisp on`, `krisp off`, `krisp toggle` | Switches Krisp, then answers |
+
+The answer is one line, like `ok incall=1 krisp=1 mute=0 deaf=0`. A pipe is local only, so nothing on the network can reach it. Any program running on your PC as you can, though.
+
+## Set it up
+
+Vencord only loads custom plugins when it's built from source, so this needs [git](https://git-scm.com/) and [Node.js](https://nodejs.org/) with pnpm (`npm i -g pnpm`).
+
+```sh
+git clone https://github.com/Vendicated/Vencord
+cd Vencord
+pnpm install --frozen-lockfile
+```
+
+Copy the `extras/vencord-bridge/streamDeckBridge` folder from this repo into Vencord's `src/userplugins/` folder, creating that folder if it isn't there. Then:
+
+```sh
+pnpm build
+pnpm inject
+```
+
+Restart Discord. The plugin turns itself on. To test it, run this in PowerShell, with Discord open:
+
+```powershell
+$p = [IO.Pipes.NamedPipeClientStream]::new('.', 'DiscordBridge', 'InOut')
+$p.Connect(2000); $w = [IO.StreamWriter]::new($p); $w.WriteLine('status'); $w.Flush()
+[IO.StreamReader]::new($p).ReadLine(); $p.Dispose()
+```
+
+Change `status` to `krisp toggle`, save it as a `.ps1`, and point a Stream Deck **System > Open** key at it. To update later, run `git pull`, `pnpm install --frozen-lockfile` and `pnpm build` in the same folder. If a Discord update ever removes Vencord, run `pnpm inject` again. `pnpm uninject` removes it.

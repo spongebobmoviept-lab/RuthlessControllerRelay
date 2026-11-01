@@ -43,7 +43,7 @@
  *   zig rc hotas_relay.rc   (-> hotas_relay_manifest.res, manifest + icon)
  *   zig cc -target x86_64-windows-gnu -O2 -Wall -Wextra -I vigem_client -o RuthlessControllerRelay.exe ^
  *       hotas_relay.c hotas_relay_manifest.res ^
- *       -ldinput8 -ldxguid -lole32 -lcomdlg32 -ladvapi32 -lshell32 -lsetupapi -lnewdev -lhid -lcfgmgr32
+ *       -ldinput8 -ldxguid -lole32 -loleaut32 -lcomdlg32 -ladvapi32 -lshell32 -lsetupapi -lnewdev -lhid -lcfgmgr32 -lws2_32
  *   (same again with -DSAFE_MODE_NO_EXTRAS -o RuthlessControllerRelay_SAFE.exe for the fallback build)
  *
  * (hotas_relay_manifest.res embeds hotas_relay.manifest, which requests
@@ -74,6 +74,7 @@
  * Run: RuthlessControllerRelay.exe [vjoy_device_id]   (default device #2)
  * Stop with Ctrl+C.
  */
+#include <winsock2.h> /* must come before windows.h; only head_udp_thread() uses it */
 #include <windows.h>
 #include <stdarg.h>
 #include <setupapi.h>
@@ -94,13 +95,20 @@
 #include <dinput.h>
 #include <commdlg.h>
 #include <sddl.h> /* ConvertStringSecurityDescriptorToSecurityDescriptorA, for the control pipe */
+#include <tlhelp32.h> /* head_process_running() */
+#include <shlobj.h>   /* SHGetFolderPathA, for opentrack's profile folder */
+#include <strmif.h>   /* head_list_cameras() */
+#include <winhttp.h>  /* the update check */
 
 /* Shown in the dashboard/waiting-screen header so anyone can tell at a
    glance which release they're running -- added with 1.0.1, the first
    release that fixed a bug serious enough that people needed to know
    whether they still had the old build (see CHANGELOG.md). Bump this with
    every GitHub release. */
-#define RELAY_VERSION "1.2.0"
+#ifndef RELAY_VERSION /* a test can pretend to be an older version */
+#define RELAY_VERSION "1.3.0"
+#define RELAY_VERSION_W L"1.3.0"
+#endif
 
 #define HIDHIDE_CLI "\"C:\\Program Files\\Nefarius Software Solutions\\HidHide\\x64\\HidHideCLI.exe\""
 #define TOGGLE_HOTKEY_ID 1
@@ -1120,6 +1128,24 @@ static volatile LONG g_hidden_mode = -1;
 #define FREELOOK_ALT_SCANCODE 0x38   /* Left Alt -- sent as a scan code so raw-input/DirectInput games see it too */
 static volatile LONG g_freelook_mouse_speed = 9138; /* mouse counts/sec at full deflection -- + / - on the dashboard, saved as freelook_speed= in the ini; default is the speed the user settled on in real play */
 static volatile LONG g_freelook_enabled = 1;        /* freelook= in the ini -- off makes RB an ordinary button again, for games where Left Alt + mouse is not free look */
+/* freelook=head, the third free-look mode: opentrack reads the webcam and
+   sends the pose ONLY to this relay (see head_udp_thread()), and the relay
+   alone decides what the game sees -- mouse moves, HOTAS mode only, game
+   focused only. g_freelook_enabled is 1 here too, so hold RB + stick and the
+   R3 lock work exactly as in plain free look. */
+static volatile LONG g_head_mode = 0;
+static volatile LONG g_head_speed = 50;             /* mouse counts per degree of head turn -- + / - on the dashboard, saved as head_speed= */
+static double g_head_yaw = 1.0, g_head_pitch = 1.0; /* head_yaw= / head_pitch=: multiplies that direction; 0 turns it off, negative flips it */
+static double g_head_deadzone = 0.15;               /* head_deadzone=, degrees: wobble smaller than this is ignored */
+static volatile LONG g_head_last_tick = 0;          /* GetTickCount() of the last pose received, for the dashboard */
+static volatile LONG g_head_seen = 0;               /* 1 once any pose has arrived */
+static volatile LONG g_head_gate_open = 0;          /* mouse output: poses arriving, HOTAS mode, game focused with the cursor over it */
+static volatile LONG g_head_stick_sent = 0;         /* head mode: mouse counts the stick has added during this RB hold, undone on letting go */
+static volatile LONG g_head_view_x = 0, g_head_view_y = 0; /* where the head points from straight ahead, -100..100, for the dashboard and Stream Deck */
+static volatile LONG g_head_recenter = 0;           /* RB tapped: the next pose becomes straight ahead, for the head box */
+static volatile LONG g_update_check = 1;            /* update_check= / the C key: look for a newer release once per launch */
+static volatile LONG g_update_ready = 0;            /* 1 once g_update_tag holds a newer release */
+static char g_update_tag[24] = "";
 static volatile LONG g_freelook_mouse_x = 0;        /* right stick X while looking, 0 otherwise -- the pump reads this */
 static volatile LONG g_freelook_alt_held = 0;
 
@@ -1187,7 +1213,7 @@ static volatile LONG g_relay_state = RELAY_STATE_STARTING;
 #define IPC_REQ_LED 0x01L                      /* refresh the PS lightbar after a mode change */
 static volatile LONG g_ipc_req = 0;
 static volatile LONG g_ipc_pad_want = -1;      /* -1 none, 0 x360, 1 ds4 */
-static volatile LONG g_ipc_fl_want = -1;       /* -1 none, 0 off, 1 on (session only, never written to the ini) */
+static volatile LONG g_ipc_fl_want = -1;       /* -1 none, 0 off, 1 on, 2 head (session only, never written to the ini) */
 /* Live input for the Stream Deck's input view. NOT taken in the part of
    the loop that reads the controller and sends it to the game: it's copied
    in the dashboard's ~15 Hz redraw step, from the same gp the on-screen
@@ -1202,7 +1228,7 @@ typedef enum {
     IPC_CMD_BAD = 0, IPC_CMD_STATUS,
     IPC_CMD_MODE_HOTAS, IPC_CMD_MODE_NORMAL, IPC_CMD_MODE_TOGGLE,
     IPC_CMD_PAD_X360, IPC_CMD_PAD_DS4, IPC_CMD_PAD_TOGGLE,
-    IPC_CMD_FL_ON, IPC_CMD_FL_OFF, IPC_CMD_FL_TOGGLE,
+    IPC_CMD_FL_ON, IPC_CMD_FL_OFF, IPC_CMD_FL_TOGGLE, IPC_CMD_FL_HEAD,
     IPC_CMD_INPUT, /* live sticks/triggers/buttons for the Stream Deck's input view */
     IPC_CMD_QUIT   /* close the relay -- the same clean exit as closing its window */
 } ipc_cmd_t;
@@ -1216,6 +1242,7 @@ static ipc_cmd_t parse_ipc_command(const char *s) {
         {"mode hotas", IPC_CMD_MODE_HOTAS}, {"mode normal", IPC_CMD_MODE_NORMAL}, {"mode toggle", IPC_CMD_MODE_TOGGLE},
         {"pad x360", IPC_CMD_PAD_X360}, {"pad ds4", IPC_CMD_PAD_DS4}, {"pad toggle", IPC_CMD_PAD_TOGGLE},
         {"freelook on", IPC_CMD_FL_ON}, {"freelook off", IPC_CMD_FL_OFF}, {"freelook toggle", IPC_CMD_FL_TOGGLE},
+        {"freelook head", IPC_CMD_FL_HEAD},
         {"input", IPC_CMD_INPUT}, {"quit", IPC_CMD_QUIT},
     };
     char buf[40];
@@ -1744,19 +1771,35 @@ static void save_config(UINT mods, UINT vk, DWORD button_mask, DWORD hold_ms, co
     }
     fprintf(out,
         "#\n"
-        "# freelook: on or off. HOTAS mode only. Hold RB to free look: the right\n"
+        "# freelook: on, off or head. HOTAS mode only. Hold RB to free look: the right\n"
         "# stick's left/right turns the camera (this holds Left Alt and moves the\n"
         "# mouse -- the game's own Alt + mouse free look), up/down keeps flying\n"
         "# pitch, and letting go snaps the camera back. Hold RB and click R3 to\n"
         "# lock the camera where it is; tap RB or click R3 to unlock. Set to off\n"
         "# for a game where Left Alt + mouse isn't free look -- RB is then an\n"
-        "# ordinary button again.\n"
+        "# ordinary button again. head adds head tracking on top of on: opentrack\n"
+        "# sends your head movement to this relay on 127.0.0.1:4242 (its UDP output),\n"
+        "# and the relay turns it into mouse moves while the game has focus.\n"
         "freelook=%s\n"
         "#\n"
         "# freelook_speed: camera turn speed at full stick (mouse counts per\n"
         "# second). Change it live with + and - while the dashboard is showing --\n"
         "# saved here automatically.\n"
         "freelook_speed=%ld\n"
+        "#\n"
+        "# head_speed: mouse counts per degree you turn your head. Change it live\n"
+        "# with + and - while head tracking is on -- saved here automatically.\n"
+        "# head_yaw / head_pitch: multiply that direction (0 = off, negative = flip).\n"
+        "# head_deadzone: head wobble smaller than this many degrees is ignored.\n"
+        "head_speed=%ld\n"
+        "head_yaw=%.2f\n"
+        "head_pitch=%.2f\n"
+        "head_deadzone=%.2f\n"
+        "#\n"
+        "# update_check: on or off. On asks GitHub for the latest release number once\n"
+        "# each time the relay starts, and the title line offers a newer one. Nothing is\n"
+        "# downloaded unless you press U and say yes. C on the dashboard flips this.\n"
+        "update_check=%s\n"
         "#\n"
         "# control_pipe: on or off (default off). On lets a Stream Deck or another\n"
         "# macro-pad app on THIS PC switch HOTAS/Normal mode, the virtual pad type\n"
@@ -1776,7 +1819,9 @@ static void save_config(UINT mods, UINT vk, DWORD button_mask, DWORD hold_ms, co
         "# Plain buttons only: a b x y lb rb back start l3 r3 dpad_up dpad_down\n"
         "# dpad_left dpad_right (not lt, rt, ps, touchpad or guide; no :hold).\n"
         "discord_button=",
-        g_freelook_enabled ? "on" : "off", (long)g_freelook_mouse_speed, g_control_pipe_enabled ? "on" : "off");
+        g_head_mode ? "head" : g_freelook_enabled ? "on" : "off", (long)g_freelook_mouse_speed,
+        (long)g_head_speed, g_head_yaw, g_head_pitch, g_head_deadzone,
+        g_update_check ? "on" : "off", g_control_pipe_enabled ? "on" : "off");
     if (!g_vjoy_passthrough) {
         fprintf(out, "none");
     } else {
@@ -1868,6 +1913,24 @@ static void load_config(UINT *mods_out, UINT *vk_out, DWORD *button_mask_out, DW
                 InterlockedExchange(&g_freelook_enabled, 0);
             else
                 InterlockedExchange(&g_freelook_enabled, 1);
+            InterlockedExchange(&g_head_mode, !strncmp(v, "head", 4));
+        } else if (!strncmp(p, "head_speed=", 11)) {
+            long s = atol(p + 11);
+            if (s >= 1 && s <= 2000) InterlockedExchange(&g_head_speed, s);
+            else fprintf(stderr, "Warning: head_speed= in %s should be 1-2000, keeping %ld.\n",
+                          HOTKEY_CONFIG_FILE, (long)g_head_speed);
+        } else if (!strncmp(p, "update_check=", 13)) {
+            char v = (char)tolower((unsigned char)p[13]);
+            InterlockedExchange(&g_update_check, !(v == '0' || v == 'n' || v == 'f' || !strncmp(p + 13, "off", 3) || !strncmp(p + 13, "OFF", 3)));
+        } else if (!strncmp(p, "head_yaw=", 9)) {
+            g_head_yaw = atof(p + 9);
+        } else if (!strncmp(p, "head_pitch=", 11)) {
+            g_head_pitch = atof(p + 11);
+        } else if (!strncmp(p, "head_deadzone=", 14)) {
+            double d = atof(p + 14);
+            if (d >= 0 && d <= 10) g_head_deadzone = d;
+            else fprintf(stderr, "Warning: head_deadzone= in %s should be 0-10, keeping %.2f.\n",
+                          HOTKEY_CONFIG_FILE, g_head_deadzone);
         } else if (!strncmp(p, "discord_button=", 15)) {
             DWORD mask = 0, hold_unused = 0;
             if (parse_button_line(p + 15, &mask, &hold_unused)) {
@@ -2029,8 +2092,11 @@ static void ansi_goto(int col, int row) { printf("\x1b[%d;%dH", row + 1, col + 1
    and would otherwise leave stray leftover lines from the longer one.
    \x1b[3J additionally clears back-scroll in terminals that support it, so
    copying "everything" out of the window doesn't pull in old frames. */
+static int g_dash_was_too_small = -1; /* -1 = not known yet; clear_console() resets it, so the "too short" note comes back */
+
 static void clear_console(void) {
     console_init_once();
+    g_dash_was_too_small = -1;
     printf("\x1b[2J\x1b[3J\x1b[H");
 }
 
@@ -2120,7 +2186,54 @@ static int console_visible_rows(void) {
     return info.srWindow.Bottom - info.srWindow.Top + 1;
 }
 
-static void draw_axis_bar(const char *label, int value, int min, int max) {
+/* What head tracking is doing right now. Also sent to the Stream Deck as hs=. */
+typedef enum { HEAD_ST_OFF = 0, HEAD_ST_NO_TRACKER, HEAD_ST_TRACKING, HEAD_ST_PAUSED, HEAD_ST_STICK, HEAD_ST_LOCKED } head_status_t;
+
+static head_status_t head_status(void) {
+    if (!g_head_mode || g_hidden_mode != 1) return HEAD_ST_OFF;
+    if (!g_head_seen || GetTickCount() - (DWORD)g_head_last_tick >= 1000) return HEAD_ST_NO_TRACKER;
+    if (g_freelook_state == FREELOOK_LOCKED) return HEAD_ST_LOCKED;
+    if (g_freelook_state != FREELOOK_OFF) return HEAD_ST_STICK;
+    if (!g_head_gate_open) return HEAD_ST_PAUSED;
+    return HEAD_ST_TRACKING;
+}
+
+/* One row of the head box, drawn to the right of the stick bars: a dot shows where
+   the head points, no numbers. Six rows, the same count as the bars, so the
+   dashboard needs no extra rows. Plain ASCII and fixed width, like the rest of it. */
+static void draw_head_box_row(int row) {
+    enum { W = 21, H = 5 };
+    head_status_t st = head_status();
+    if (row == 0) {
+        static const char *const words[] = {"OFF", "NO TRACKER", "TRACKING", "PAUSED", "RB: STICK", "LOCKED"};
+        char top[W + 3];
+        int n = snprintf(top, sizeof(top), "+- HEAD: %s ", words[st]);
+        while (n < W + 1) top[n++] = '-';
+        top[n++] = '+';
+        top[n] = '\0';
+        set_color(st == HEAD_ST_TRACKING ? CLR_GREEN_BR : st == HEAD_ST_OFF ? CLR_GRAY_DIM : CLR_YELLOW_BR);
+        printf("  %s", top);
+        return;
+    }
+    char line[W + 1];
+    memset(line, ' ', W);
+    line[W] = '\0';
+    int y = row - 1;
+    if (y == H / 2) line[W / 2] = '+';
+    if (st != HEAD_ST_OFF && st != HEAD_ST_NO_TRACKER) {
+        int dotX = W / 2 + (int)g_head_view_x * (W / 2) / 100;
+        int dotY = H / 2 + ((int)g_head_view_y * (H / 2) + (g_head_view_y < 0 ? -50 : 50)) / 100;
+        if (dotY == y) line[dotX] = 'O';
+    }
+    set_color(st == HEAD_ST_OFF ? CLR_GRAY_DIM : CLR_CYAN);
+    printf("  |");
+    set_color(CLR_YELLOW_BR);
+    printf("%s", line);
+    set_color(st == HEAD_ST_OFF ? CLR_GRAY_DIM : CLR_CYAN);
+    printf("|");
+}
+
+static void draw_axis_bar(const char *label, int value, int min, int max, int headRow) {
     enum { WIDTH = 21 };
     char bar[WIDTH + 1];
     int pos = (int)(((long long)(value - min) * (WIDTH - 1)) / (max - min));
@@ -2136,7 +2249,9 @@ static void draw_axis_bar(const char *label, int value, int min, int max) {
     set_color(CLR_CYAN);
     printf("] ");
     set_color(CLR_WHITE_BR);
-    printf("%6d\n", value);
+    printf("%6d", value);
+    draw_head_box_row(headRow);
+    printf("\n");
 }
 
 /* Simple flat grid, not a spatial diagram -- exact positions on screen
@@ -2244,9 +2359,9 @@ static void render_waiting_screen(UINT rid, int was_ever_connected) {
    terminal to auto-scroll every redraw; below, this is checked BEFORE
    drawing anything so that can't happen regardless of window height. */
 #ifdef RCR_OBS_REMINDER
-#define DASHBOARD_ROWS_NEEDED 40 /* +1 for the personal-build OBS hotkey reminder line */
+#define DASHBOARD_ROWS_NEEDED 41 /* +1 for the personal-build OBS hotkey reminder line */
 #else
-#define DASHBOARD_ROWS_NEEDED 39
+#define DASHBOARD_ROWS_NEEDED 40
 #endif
 
 /* Explicit user request 2026-09-09, "some ascii art... free right?" -- a
@@ -2305,21 +2420,20 @@ static void render_dashboard(const XINPUT_GAMEPAD *gp, double updates_per_sec, U
     /* Edge-triggered (only clear+print on a CHANGE of state), not
        re-printed every ~15Hz frame -- otherwise this fallback message
        would flash exactly the same way the bug it's working around does. */
-    static int was_too_small = -1; /* -1 = not yet known */
-    int too_small = console_visible_rows() < DASHBOARD_ROWS_NEEDED;
+        int too_small = console_visible_rows() < DASHBOARD_ROWS_NEEDED;
     if (too_small) {
-        if (was_too_small != 1) {
+        if (g_dash_was_too_small != 1) {
             clear_console();
             set_color(CLR_BANNER_UNKNOWN);
             printf("This window is too short to show the dashboard without it scrolling.\n");
             set_color(CLR_NORMAL);
             printf("Please enlarge/maximize this window (needs about %d rows), or shrink\n", DASHBOARD_ROWS_NEEDED);
             printf("the terminal font, then it'll display correctly here automatically.\n");
-            was_too_small = 1;
+            g_dash_was_too_small = 1;
         }
         return;
     }
-    was_too_small = 0;
+    g_dash_was_too_small = 0;
 
     ansi_goto(0, 0);
 
@@ -2350,7 +2464,10 @@ static void render_dashboard(const XINPUT_GAMEPAD *gp, double updates_per_sec, U
                                               : " MODE UNKNOWN -- press Ctrl+Alt+H once to set it                      ";
 
     set_color(CLR_WHITE_BR);
-    printf("=== Ruthless Controller Relay v" RELAY_VERSION " -- vJoy device #%u ===   \n", rid);
+    printf("=== Ruthless Controller Relay v" RELAY_VERSION " -- vJoy device #%u ===", rid);
+    set_color(CLR_YELLOW_BR);
+    if (g_update_ready) printf("  UPDATE %s: press U to update  \n", g_update_tag);
+    else printf("                                        \n");
     set_color(CLR_CYAN);
     printf("Controller: %-52s\n", describe_controller(g_backend));
     /* See g_battery_src's own comment for exactly what each source can and
@@ -2407,7 +2524,15 @@ static void render_dashboard(const XINPUT_GAMEPAD *gp, double updates_per_sec, U
     set_color(CLR_GREEN_BR);
     printf(" READY -- controller connected, you can start your game now.          \n\n");
     set_color(banner_clr);
-    if (FREELOOK_USE_MOUSE && g_freelook_enabled && mode == 1 && look == FREELOOK_OFF) {
+    if (g_head_mode && mode == 1 && look == FREELOOK_OFF) {
+        /* Same 70-column width. A pose in the last second = opentrack is really feeding us. */
+        char head_banner[80];
+        if (g_head_seen && GetTickCount() - (DWORD)g_head_last_tick < 1000)
+            snprintf(head_banner, sizeof(head_banner), " HOTAS -- HEAD TRACKING  tap RB = recenter  speed %ld (+/-)", (long)g_head_speed);
+        else
+            snprintf(head_banner, sizeof(head_banner), " HOTAS -- HEAD TRACKING: no tracker data yet (H = setup)");
+        printf("%-70s\n", head_banner);
+    } else if (FREELOOK_USE_MOUSE && g_freelook_enabled && mode == 1 && look == FREELOOK_OFF) {
         /* HOTAS banner shows the live mouse free-look speed (+ / - to change) -- same 70-column width */
         char speed_banner[80];
         snprintf(speed_banner, sizeof(speed_banner), " HOTAS MODE -- hold RB = free look   look speed %ld (+/- to change)",
@@ -2426,15 +2551,17 @@ static void render_dashboard(const XINPUT_GAMEPAD *gp, double updates_per_sec, U
     printf("Press R to change the hotkey/button above live. Press M to fix/remap   \n");
     printf("any vJoy button (see the grid below).                                 \n");
     printf("Press G to %-58s\n", g_game_path[0] ? "launch your game." : "pick your game's exe (then launch it).");
+    printf("F: free look %-6s  H: head tracking setup  C: update check %-3s       \n",
+           g_head_mode ? "HEAD" : g_freelook_enabled ? "NORMAL" : "OFF", g_update_check ? "on" : "off");
     printf("Updates/sec: %6.1f                                          \n\n", updates_per_sec);
     set_color(CLR_NORMAL);
 
-    draw_axis_bar("LX", gp->sThumbLX, -32768, 32767);
-    draw_axis_bar("LY", gp->sThumbLY, -32768, 32767);
-    draw_axis_bar("RX", gp->sThumbRX, -32768, 32767);
-    draw_axis_bar("RY", gp->sThumbRY, -32768, 32767);
-    draw_axis_bar("LT", gp->bLeftTrigger, 0, 255);
-    draw_axis_bar("RT", gp->bRightTrigger, 0, 255);
+    draw_axis_bar("LX", gp->sThumbLX, -32768, 32767, 0);
+    draw_axis_bar("LY", gp->sThumbLY, -32768, 32767, 1);
+    draw_axis_bar("RX", gp->sThumbRX, -32768, 32767, 2);
+    draw_axis_bar("RY", gp->sThumbRY, -32768, 32767, 3);
+    draw_axis_bar("LT", gp->bLeftTrigger, 0, 255, 4);
+    draw_axis_bar("RT", gp->bRightTrigger, 0, 255, 5);
 
     printf("\n  ");
     draw_button(label_for_phys(XINPUT_GAMEPAD_A, g_backend), gp->wButtons & XINPUT_GAMEPAD_A,
@@ -5364,6 +5491,7 @@ static DWORD WINAPI vjoy_pump_thread(LPVOID arg) {
                 LONG dx = (LONG)carry; /* truncates toward zero; the rest carries */
                 if (dx) {
                     carry -= dx;
+                    if (g_head_mode) InterlockedExchangeAdd(&g_head_stick_sent, dx);
                     INPUT in;
                     memset(&in, 0, sizeof(in));
                     in.type = INPUT_MOUSE;
@@ -5378,6 +5506,767 @@ static DWORD WINAPI vjoy_pump_thread(LPVOID arg) {
     }
     return 0;
 }
+
+/* One axis of head tracking: head angle in, whole mouse counts out. Relative,
+   so there's no center to lose: only change since the last pose moves the
+   camera, and turning back undoes it. send=0 follows the head silently, so
+   coming back from a closed gate (alt-tab, R3 lock, mode switch) never jumps.
+   Pure (no globals touched), so --test-config can check it. */
+typedef struct { double ref, carry; int primed; } head_axis_t;
+#define HEAD_MAX_STEP_DEG 45.0 /* one pose can't really move this far: tracker lost and re-found the face */
+
+static int head_axis_step(head_axis_t *a, double angle, double counts_per_deg, double deadzone, int send) {
+    if (!a->primed) {
+        a->ref = angle;
+        a->carry = 0;
+        a->primed = 1;
+        return 0;
+    }
+    double d = angle - a->ref;
+    if (fabs(d) > HEAD_MAX_STEP_DEG) {
+        a->ref = angle;
+        return 0;
+    }
+    double moved = d > deadzone ? d - deadzone : d < -deadzone ? d + deadzone : 0;
+    a->ref += moved;
+    if (!send) return 0;
+    a->carry += moved * counts_per_deg;
+    int out = (int)a->carry; /* truncates toward zero; the rest carries */
+    a->carry -= out;
+    return out;
+}
+
+/* Pure helpers for the update check and the head tracking setup, so --test-config can check them. */
+
+/* "v1.3.0" -> newer than "1.2.9"? Numbers only, up to four parts; anything else isn't newer. */
+static int relay_version_newer(const char *latest, const char *current) {
+    int a[4] = {0}, b[4] = {0};
+    if (*latest == 'v' || *latest == 'V') latest++;
+    if (*current == 'v' || *current == 'V') current++;
+    if (sscanf(latest, "%d.%d.%d.%d", &a[0], &a[1], &a[2], &a[3]) < 1) return 0;
+    if (sscanf(current, "%d.%d.%d.%d", &b[0], &b[1], &b[2], &b[3]) < 1) return 0;
+    for (int i = 0; i < 4; i++)
+        if (a[i] != b[i]) return a[i] > b[i];
+    return 0;
+}
+
+/* Pulls tag_name out of GitHub's reply. It comes from the network and gets shown on
+   the dashboard, so only short "v1.2.3"-shaped text is accepted. */
+static int update_tag_from_json(const char *json, char *tag, size_t len) {
+    const char *p = strstr(json, "\"tag_name\"");
+    if (!p) return 0;
+    p = strchr(p + 10, ':');
+    if (!p) return 0;
+    p++;
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+    if (*p != '"') return 0;
+    p++;
+    size_t n = 0;
+    while (p[n] && p[n] != '"') {
+        if (n + 1 >= len) return 0;
+        if (!(isdigit((unsigned char)p[n]) || p[n] == '.' || (n == 0 && (p[n] == 'v' || p[n] == 'V')))) return 0;
+        tag[n] = p[n];
+        n++;
+    }
+    if (n == 0 || p[n] != '"') return 0;
+    tag[n] = '\0';
+    return isdigit((unsigned char)tag[n - 1]) != 0;
+}
+
+static const char HEAD_PROFILE_DEFAULT[] =
+    "[migrations]\nlast-migration-at=20220126_00~\n\n"
+    "[modules]\ntracker-dll=neuralnet\nprotocol-dll=udp\nfilter-dll=accela\n\n"
+    "[neuralnet-tracker]\ncamera-name=\nposenet-file=head-pose-0.4-big-int8.onnx\nnum-threads=2\n"
+    "force-resolution=1\nforce-fps=2\nuse-mjpeg=true\ninternal-filter-enabled=false\n\n"
+    "[udp-proto]\nip1=127\nip2=0\nip3=0\nip4=1\nport=4242\n\n"
+    "[opentrack-ui]\nuse-system-tray=true\nstart-in-tray=true\npitch-invert-sign=true\n";
+
+/* Sets the camera in an opentrack profile and keeps everything else, so anything tuned
+   in opentrack's own window survives running setup again. Other trackers have a
+   camera-name line too: only the neuralnet section's is touched. existing NULL or
+   without that section = the default profile. Returns 0 if it wouldn't fit. */
+static int head_profile_with_camera(const char *existing, const char *camera, char *out, size_t len) {
+    const char *base = existing && strstr(existing, "[neuralnet-tracker]") ? existing : HEAD_PROFILE_DEFAULT;
+    const char *sec = strstr(base, "[neuralnet-tracker]");
+    const char *secEnd = strstr(sec + 1, "\n[");
+    const char *line = strstr(sec, "\ncamera-name=");
+    const char *cut, *resume;
+    if (line && (!secEnd || line < secEnd)) {
+        cut = line + 1;
+        resume = strchr(cut, '\n');
+        if (!resume) resume = cut + strlen(cut);
+        else resume++;
+    } else {
+        cut = strchr(sec, '\n');
+        cut = cut ? cut + 1 : sec + strlen(sec);
+        resume = cut;
+    }
+    int n = snprintf(out, len, "%.*scamera-name=%s\n%s", (int)(cut - base), base, camera, resume);
+    return n > 0 && (size_t)n < len;
+}
+
+/* opentrack's game list: exe <0x1f> profile, entries split by 0x1e. Adds this game and
+   keeps the others; a game already listed is left as it is. Returns 0 if it wouldn't fit. */
+static int head_detector_list(const char *existing, const char *exe, const char *profile, char *out, size_t len) {
+    char key[MAX_PATH + 2];
+    snprintf(key, sizeof(key), "%s\x1f", exe);
+    int n;
+    if (strstr(existing, key)) n = snprintf(out, len, "%s", existing);
+    else if (existing[0]) n = snprintf(out, len, "%s\x1e%s\x1f%s", existing, exe, profile);
+    else n = snprintf(out, len, "%s\x1f%s", exe, profile);
+    return n > 0 && (size_t)n < len;
+}
+
+/* -100..100 for the head box and Stream Deck. Pure, so --test-config can check it. */
+static LONG head_view(double deg, double fullDeg) {
+    double v = deg / fullDeg * 100.0;
+    return v > 100 ? 100 : v < -100 ? -100 : (LONG)v;
+}
+
+/* What letting go of RB (or unlocking) does: tap the game's FreeLookReset, with
+   Left Alt let go for the tap (see wantAlt). Head mode also marks the next pose as
+   straight ahead, for the head box. */
+static void freelook_recenter(ULONGLONG *resetUntil, ULONGLONG now) {
+    if (g_head_mode) InterlockedExchange(&g_head_recenter, 1);
+    *resetUntil = now + FREELOOK_RESET_PULSE_MS;
+}
+
+/* Letting go of RB. In head mode, if the stick steered during the hold, take back
+   exactly that much: the camera returns to where the head has it and the center
+   stays put. A tap with no steering recenters. Normal free look always recenters. */
+static void freelook_let_go(ULONGLONG *resetUntil, ULONGLONG now) {
+    LONG sent = InterlockedExchange(&g_head_stick_sent, 0);
+    if (!g_head_mode || sent == 0) {
+        freelook_recenter(resetUntil, now);
+        return;
+    }
+    INPUT in;
+    memset(&in, 0, sizeof(in));
+    in.type = INPUT_MOUSE;
+    in.mi.dx = -sent;
+    in.mi.dwFlags = MOUSEEVENTF_MOVE;
+    SendInput(1, &in, sizeof(in));
+}
+
+#ifndef SAFE_MODE_NO_EXTRAS /* SAFE builds have no head tracking */
+#ifndef HEAD_UDP_PORT /* probes\head_udp_test.c uses its own, so it can run beside a live relay */
+#define HEAD_UDP_PORT 4242
+#endif
+#define HEAD_GAP_MS 250 /* no pose for this long: start fresh on the next one instead of jumping */
+
+/* Is this process the program set with G or H? By name, from the system's process
+   list, so nothing ever opens a handle to the game. Looks again only when focus moves
+   to another process. No program set: no. */
+static int head_pid_is_game(DWORD pid) {
+    static DWORD lastPid = 0;
+    static char name[MAX_PATH] = "";
+    if (pid != lastPid) {
+        PROCESSENTRY32 pe;
+        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if (snap == INVALID_HANDLE_VALUE) return 0;
+        name[0] = '\0';
+        pe.dwSize = sizeof(pe);
+        for (BOOL more = Process32First(snap, &pe); more; more = Process32Next(snap, &pe)) {
+            if (pe.th32ProcessID == pid) {
+                lstrcpynA(name, pe.szExeFile, sizeof(name));
+                break;
+            }
+        }
+        CloseHandle(snap);
+        lastPid = pid;
+    }
+    const char *slash = strrchr(g_game_path, '\\');
+    return name[0] && !_stricmp(name, slash ? slash + 1 : g_game_path);
+}
+
+/* Does the game have the mouse? Focused, cursor over it, and cursor hidden. A game
+   stays focused while the mouse is used on another monitor, until something else is
+   clicked, and it shows the cursor there and in its menus but hides it while flying
+   (logged in game 2026-11-01). So this leaves the desktop cursor and inventory alone.
+   Checked 4x a second, not per pose. */
+static int head_game_focused(DWORD now) {
+    static DWORD checked = 0;
+    static int focused = 0;
+    if (now - checked >= 250) {
+        HWND fg = GetForegroundWindow();
+        DWORD pid = 0;
+        RECT win;
+        POINT cursor;
+        CURSORINFO ci;
+        ci.cbSize = sizeof(ci);
+        GetWindowThreadProcessId(fg, &pid);
+        focused = head_pid_is_game(pid) && GetCursorInfo(&ci) && !(ci.flags & CURSOR_SHOWING) &&
+                  GetWindowRect(fg, &win) && GetCursorPos(&cursor) && PtInRect(&win, cursor);
+        checked = now;
+    }
+    return focused;
+}
+
+/* Is a program with this exe name running? By name only, from the system's process
+   list, so it never opens a handle to anything (the game included). */
+static int head_process_running(const char *exe) {
+    int found = 0;
+    PROCESSENTRY32 pe;
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return 0;
+    pe.dwSize = sizeof(pe);
+    for (BOOL more = Process32First(snap, &pe); more && !found; more = Process32Next(snap, &pe))
+        found = !_stricmp(pe.szExeFile, exe);
+    CloseHandle(snap);
+    return found;
+}
+
+/* Where opentrack's own installer puts it. */
+static int head_find_opentrack(char *path, size_t len) {
+    static const char *const places[] = {"%ProgramFiles(x86)%\\opentrack\\opentrack.exe", "%ProgramFiles%\\opentrack\\opentrack.exe"};
+    for (size_t i = 0; i < sizeof(places) / sizeof(places[0]); i++) {
+        DWORD n = ExpandEnvironmentStringsA(places[i], path, (DWORD)len);
+        if (n > 0 && n <= len && GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES) return 1;
+    }
+    return 0;
+}
+
+/* Runs opentrack only while head mode is on, so the webcam is off otherwise, and brings
+   it back if it stops. The job closes it with the relay, however the relay ends. If
+   something else already started opentrack, that one is used and left alone.
+   Started through a short-lived hidden cmd: opentrack attaches to its parent's console
+   and prints debug text, which would land on the dashboard. Children stay in the job. */
+static void head_tracker_keep(DWORD now) {
+    static DWORD lastCheck = 0, lastStart = 0;
+    static HANDLE job = NULL;
+    static int ours = 0;
+    if (now - lastCheck < 2000) return;
+    lastCheck = now;
+    int running = head_process_running("opentrack.exe");
+    if (!g_head_mode) {
+        if (ours && running && job) TerminateJobObject(job, 0);
+        ours = 0;
+        return;
+    }
+    if (running) return;
+    ours = 0;
+    if (lastStart && now - lastStart < 10000) return; /* a slow start or a crash isn't restarted over itself */
+
+    char exe[MAX_PATH], dir[MAX_PATH], shell[MAX_PATH], cmd[MAX_PATH * 3];
+    if (!head_find_opentrack(exe, sizeof(exe))) return; /* the head box stays on NO TRACKER; H sets it up */
+    if (!ExpandEnvironmentStringsA("%SystemRoot%\\System32\\cmd.exe", shell, sizeof(shell))) return;
+    strncpy(dir, exe, sizeof(dir) - 1);
+    dir[sizeof(dir) - 1] = '\0';
+    char *slash = strrchr(dir, '\\');
+    if (slash) *slash = '\0';
+    snprintf(cmd, sizeof(cmd), "\"%s\" /c start \"\" /d \"%s\" \"%s\"", shell, dir, exe);
+    STARTUPINFOA si = {.cb = sizeof(si)};
+    PROCESS_INFORMATION pi;
+    lastStart = now ? now : 1;
+    if (!job) {
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION lim;
+        memset(&lim, 0, sizeof(lim));
+        lim.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        job = CreateJobObjectA(NULL, NULL);
+        if (job) SetInformationJobObject(job, JobObjectExtendedLimitInformation, &lim, sizeof(lim));
+    }
+    if (!CreateProcessA(shell, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW | CREATE_SUSPENDED, NULL, dir, &si, &pi)) {
+        log_line("head tracking: couldn't start opentrack (error %lu)", GetLastError());
+        return;
+    }
+    if (job) AssignProcessToJobObject(job, pi.hProcess);
+    ResumeThread(pi.hThread);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    ours = 1;
+    log_line("head tracking: started opentrack");
+}
+
+/* opentrack's "UDP over network" output: one 48-byte datagram per update, six
+   doubles, X Y Z yaw pitch roll. Localhost only. Its own thread, so the
+   controller read/send loop is never touched; blocked in recv (no CPU) unless
+   poses are arriving, and not even started until head mode is first used. */
+static DWORD WINAPI head_udp_thread(LPVOID arg) {
+    (void)arg;
+    WSADATA wsa;
+    struct sockaddr_in addr;
+    SOCKET s = INVALID_SOCKET;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) == 0) s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(HEAD_UDP_PORT);
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (s == INVALID_SOCKET || bind(s, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        log_line("head tracking: can't listen on 127.0.0.1:%d (error %d)", HEAD_UDP_PORT, WSAGetLastError());
+        return 0;
+    }
+    log_line("head tracking: listening on 127.0.0.1:%d", HEAD_UDP_PORT);
+    DWORD recvTimeoutMs = HEAD_GAP_MS; /* so a lost tracker lets go of Alt, and head_tracker_keep() gets to run */
+    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char *)&recvTimeoutMs, sizeof(recvTimeoutMs));
+
+    head_axis_t yaw = {0}, pitch = {0};
+    int heldX = 0, heldY = 0; /* head movement during an RB hold, applied on letting go so the center stays put */
+    DWORD last = 0;
+    double zeroYaw = 0, zeroPitch = 0;
+    for (;;) {
+        double pose[6];
+#ifndef HEAD_TEST_NO_TRACKER
+        head_tracker_keep(GetTickCount());
+#endif
+        int n = recv(s, (char *)pose, sizeof(pose), 0);
+        if (n != (int)sizeof(pose)) {
+            int err = n == SOCKET_ERROR ? WSAGetLastError() : 0;
+            if (err == WSAETIMEDOUT) {
+                InterlockedExchange(&g_head_gate_open, 0); /* tracker gone: let go of Alt */
+            } else if (n == SOCKET_ERROR && err != WSAEMSGSIZE) {
+                Sleep(100); /* never spin on a dead socket */
+            }
+            continue;
+        }
+        if (!isfinite(pose[3]) || !isfinite(pose[4])) continue;
+        DWORD now = GetTickCount();
+        int fresh = now - last > HEAD_GAP_MS;
+        if (fresh) yaw.primed = pitch.primed = 0;
+        last = now;
+        InterlockedExchange(&g_head_last_tick, (LONG)now);
+        InterlockedExchange(&g_head_seen, 1);
+
+        if (InterlockedExchange(&g_head_recenter, 0) || fresh) {
+            zeroYaw = pose[3];
+            zeroPitch = pose[4];
+        }
+        InterlockedExchange(&g_head_view_x, head_view((pose[3] - zeroYaw) * g_head_yaw, 45.0));
+        InterlockedExchange(&g_head_view_y, head_view((pose[4] - zeroPitch) * g_head_pitch, 30.0));
+
+        int gate = g_head_mode && g_hidden_mode == 1 && head_game_focused(now);
+        InterlockedExchange(&g_head_gate_open, gate);
+        int live = gate && g_freelook_state != FREELOOK_LOCKED;
+        double speed = (double)g_head_speed;
+        int dx = head_axis_step(&yaw, pose[3], speed * g_head_yaw, g_head_deadzone, live);
+        int dy = head_axis_step(&pitch, pose[4], speed * g_head_pitch, g_head_deadzone, live);
+        /* Holding RB: the stick has the camera alone, the head waits. */
+        LONG lookState = g_freelook_state;
+        if (lookState == FREELOOK_LOOKING || lookState == FREELOOK_LOOKING_LOCK_ARMED) {
+            heldX += dx;
+            heldY += dy;
+            dx = dy = 0;
+        } else {
+            dx += heldX;
+            dy += heldY;
+            heldX = heldY = 0;
+        }
+        if (dx || dy) {
+            INPUT in;
+            memset(&in, 0, sizeof(in));
+            in.type = INPUT_MOUSE;
+            in.mi.dx = dx;
+            in.mi.dy = dy;
+            in.mi.dwFlags = MOUSEEVENTF_MOVE;
+            SendInput(1, &in, sizeof(in));
+        }
+    }
+}
+
+/* Only ever starts once, the first time head mode is used. */
+static void head_start_thread(void) {
+    static volatile LONG started = 0;
+    if (InterlockedExchange(&started, 1)) return;
+    HANDLE t = CreateThread(NULL, 0, head_udp_thread, NULL, 0, NULL);
+    if (t) {
+        SetThreadPriority(t, THREAD_PRIORITY_ABOVE_NORMAL);
+        CloseHandle(t);
+    }
+}
+
+/* Every video source Windows offers, by the name opentrack uses for it. */
+static int head_list_cameras(char names[][128], int max) {
+    static const GUID clsEnum = {0x62BE5D10, 0x60EB, 0x11D0, {0xBD, 0x3B, 0x00, 0xA0, 0xC9, 0x11, 0xCE, 0x86}};
+    static const GUID iidEnum = {0x29840822, 0x5B84, 0x11D0, {0xBD, 0x3B, 0x00, 0xA0, 0xC9, 0x11, 0xCE, 0x86}};
+    static const GUID catVideo = {0x860BB310, 0x5D01, 0x11D0, {0xBD, 0x3B, 0x00, 0xA0, 0xC9, 0x11, 0xCE, 0x86}};
+    static const GUID iidBag = {0x55272A00, 0x42CB, 0x11CE, {0x81, 0x35, 0x00, 0xAA, 0x00, 0x4B, 0xB8, 0x51}};
+    int count = 0;
+    HRESULT init = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+    ICreateDevEnum *devs = NULL;
+    IEnumMoniker *list = NULL;
+    if (SUCCEEDED(CoCreateInstance(&clsEnum, NULL, CLSCTX_INPROC_SERVER, &iidEnum, (void **)&devs))) {
+        if (devs->lpVtbl->CreateClassEnumerator(devs, &catVideo, &list, 0) == S_OK) {
+            IMoniker *m = NULL;
+            while (count < max && list->lpVtbl->Next(list, 1, &m, NULL) == S_OK) {
+                IPropertyBag *bag = NULL;
+                if (SUCCEEDED(m->lpVtbl->BindToStorage(m, NULL, NULL, &iidBag, (void **)&bag))) {
+                    VARIANT v;
+                    VariantInit(&v);
+                    if (SUCCEEDED(bag->lpVtbl->Read(bag, L"FriendlyName", &v, NULL)) && v.vt == VT_BSTR &&
+                        WideCharToMultiByte(CP_UTF8, 0, v.bstrVal, -1, names[count], 128, NULL, NULL) > 0) {
+                        count++;
+                    }
+                    VariantClear(&v);
+                    bag->lpVtbl->Release(bag);
+                }
+                m->lpVtbl->Release(m);
+            }
+            list->lpVtbl->Release(list);
+        }
+        devs->lpVtbl->Release(devs);
+    }
+    if (SUCCEEDED(init)) CoUninitialize();
+    return count;
+}
+
+/* Waits for a key on the setup screen. H again, or a held H, isn't an answer. */
+static char head_setup_wait_key(void) {
+    for (;;) {
+        char k = check_console_keypress();
+        if (k && k != 'H') return k;
+        Sleep(30);
+    }
+}
+
+/* Runs the opentrack installer that ships next to the relay. Returns 1 once opentrack is there. */
+static int head_setup_install_opentrack(void) {
+    char pattern[MAX_PATH], setup[MAX_PATH], found[MAX_PATH];
+    if (head_find_opentrack(found, sizeof(found))) return 1;
+    GetModuleFileNameA(NULL, pattern, sizeof(pattern));
+    char *slash = strrchr(pattern, '\\');
+    if (slash) slash[1] = '\0';
+    strncpy(setup, pattern, sizeof(setup) - 1);
+    setup[sizeof(setup) - 1] = '\0';
+    size_t dirLen = strlen(setup);
+    strncat(pattern, "opentrack-*-setup.exe", sizeof(pattern) - strlen(pattern) - 1);
+    WIN32_FIND_DATAA fd;
+    HANDLE f = FindFirstFileA(pattern, &fd);
+    if (f == INVALID_HANDLE_VALUE) {
+        printf("opentrack isn't installed, and its installer isn't next to the relay.\n");
+        printf("Get it from https://github.com/opentrack/opentrack/releases\n\n");
+        return 0;
+    }
+    FindClose(f);
+    strncat(setup, fd.cFileName, sizeof(setup) - dirLen - 1);
+    printf("opentrack isn't installed yet. It reads your webcam for the relay.\n");
+    printf("Press Y to install it now, any other key to cancel.\n\n");
+    if (head_setup_wait_key() != 'Y') return 0;
+    printf("Installing...\n");
+    SHELLEXECUTEINFOA sei;
+    memset(&sei, 0, sizeof(sei));
+    sei.cbSize = sizeof(sei);
+    sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+    sei.lpFile = setup;
+    sei.lpParameters = "/SILENT /SUPPRESSMSGBOXES /NORESTART";
+    sei.nShow = SW_SHOWNORMAL;
+    if (ShellExecuteExA(&sei) && sei.hProcess) {
+        WaitForSingleObject(sei.hProcess, INFINITE);
+        CloseHandle(sei.hProcess);
+    }
+    if (head_find_opentrack(found, sizeof(found))) return 1;
+    printf("That didn't finish. You can run %s yourself and press H again.\n\n", fd.cFileName);
+    return 0;
+}
+
+/* H on the dashboard: everything head tracking needs, right here in the relay window. */
+static void run_head_setup_flow(void) {
+    static char cameras[16][128];
+    LONG wasOn = g_head_mode;
+    InterlockedExchange(&g_head_mode, 0);
+
+    clear_console();
+    set_color(CLR_WHITE_BR);
+    printf("=== HEAD TRACKING SETUP ===\n\n");
+    set_color(CLR_NORMAL);
+    printf("Your webcam tracks your head, and the camera in the game follows it.\n\n");
+    set_color(CLR_YELLOW_BR);
+    printf("NOTICE: this sends your head movement to the game as mouse movement from\n");
+    printf("software. Anti-cheat that studies mouse input could treat that as suspicious.\n");
+    printf("No bans are known, but nobody can promise that. Use it at your own risk.\n\n");
+    set_color(CLR_NORMAL);
+
+    if (wasOn) {
+        printf("One moment, closing the tracker...\n\n");
+        Sleep(2500); /* lets go of the camera, and opentrack reads its settings when it starts again */
+        check_console_keypress(); /* keys pressed while waiting aren't answers to what comes next */
+    }
+
+    if (!head_setup_install_opentrack()) goto cancel;
+
+    int n = head_list_cameras(cameras, 9);
+    if (n == 0) {
+        printf("No camera found. Plug in a webcam and press H again.\n\n");
+        goto cancel;
+    }
+    printf("Which camera?\n\n");
+    for (int i = 0; i < n; i++) printf("  %d  %s\n", i + 1, cameras[i]);
+    printf("\nPress its number, or any other key to cancel.\n\n");
+    char k = head_setup_wait_key();
+    if (k < '1' || k >= '1' + n) goto done_cancel;
+    const char *camera = cameras[k - '1'];
+
+    if (g_game_path[0]) {
+        const char *current = strrchr(g_game_path, '\\');
+        printf("Head tracking runs in: %s\n", current ? current + 1 : g_game_path);
+        printf("Press G to pick a different program, any other key to keep it.\n\n");
+        if (head_setup_wait_key() == 'G') run_set_game_flow(); /* cancelling the picker keeps this one */
+    } else {
+        printf("Now pick your game's .exe. Head tracking runs in it, and starts when it does.\n");
+        Sleep(1200);
+        if (!run_set_game_flow()) goto done_cancel;
+    }
+    const char *exe = strrchr(g_game_path, '\\');
+    exe = exe ? exe + 1 : g_game_path;
+
+    /* opentrack's profile: keeps anything already tuned in its window */
+    static const char profileName[] = "relay-head.ini";
+    char dir[MAX_PATH], path[MAX_PATH + 32];
+    static char oldText[8192], newText[8192];
+    if (SHGetFolderPathA(NULL, CSIDL_PERSONAL, NULL, 0, dir) != S_OK) {
+        printf("Couldn't find your Documents folder.\n\n");
+        goto cancel;
+    }
+    snprintf(path, sizeof(path), "%s\\opentrack-2.3", dir);
+    CreateDirectoryA(path, NULL);
+    snprintf(path, sizeof(path), "%s\\opentrack-2.3\\%s", dir, profileName);
+    oldText[0] = '\0';
+    FILE *fp = fopen(path, "rb");
+    if (fp) {
+        size_t got = fread(oldText, 1, sizeof(oldText) - 1, fp);
+        oldText[got] = '\0';
+        fclose(fp);
+    }
+    if (!head_profile_with_camera(oldText[0] ? oldText : NULL, camera, newText, sizeof(newText)) || !(fp = fopen(path, "wb"))) {
+        printf("Couldn't write %s\n\n", path);
+        goto cancel;
+    }
+    fputs(newText, fp);
+    fclose(fp);
+
+    /* opentrack's game list, so it starts tracking when the game runs: it has no other way to autostart */
+    static const char regKey[] = "Software\\opentrack-2.3\\OrganizationDefaults";
+    static char oldList[4096], newList[4096];
+    DWORD size = sizeof(oldList);
+    if (RegGetValueA(HKEY_CURRENT_USER, regKey, "executable-list", RRF_RT_REG_SZ, NULL, oldList, &size) != ERROR_SUCCESS) oldList[0] = '\0';
+    if (!head_detector_list(oldList, exe, profileName, newList, sizeof(newList)) ||
+        RegSetKeyValueA(HKEY_CURRENT_USER, regKey, "executable-list", REG_SZ, newList, (DWORD)strlen(newList) + 1) != ERROR_SUCCESS ||
+        RegSetKeyValueA(HKEY_CURRENT_USER, regKey, "executable-detector-enabled", REG_SZ, "true", 5) != ERROR_SUCCESS ||
+        RegSetKeyValueA(HKEY_CURRENT_USER, regKey, "settings-filename", REG_SZ, profileName, sizeof(profileName)) != ERROR_SUCCESS) {
+        printf("Couldn't save opentrack's settings.\n\n");
+        goto cancel;
+    }
+
+    InterlockedExchange(&g_freelook_enabled, 1);
+    InterlockedExchange(&g_head_mode, 1);
+    head_start_thread();
+    save_config(g_hotkey_mods, g_hotkey_vk, g_toggle_button_mask, g_toggle_hold_ms, g_game_path);
+    set_color(CLR_GREEN_BR);
+    printf("All set: head tracking is on, using %s.\n", camera);
+    printf("It runs in %s.\n\n", exe);
+    set_color(CLR_NORMAL);
+    printf("Start it and switch to HOTAS mode. Tracking starts with it, and the dot in\n");
+    printf("the HEAD box follows you.\n\n");
+    printf("  Tap RB          recenter (look straight ahead first)\n");
+    printf("  Hold RB         stick moves the camera, head paused; let go to return\n");
+    printf("  RB + click R3   freeze the camera; tap RB to release\n");
+    printf("  + and -         head speed\n");
+    printf("  F               free look off / normal / head\n\n");
+    printf("Press any key.\n");
+    head_setup_wait_key();
+    clear_console();
+    return;
+
+done_cancel:
+    printf("Cancelled.\n");
+    Sleep(800);
+    InterlockedExchange(&g_head_mode, wasOn);
+    clear_console();
+    return;
+cancel:
+    printf("Press any key.\n");
+    head_setup_wait_key();
+    InterlockedExchange(&g_head_mode, wasOn);
+    clear_console();
+}
+
+/* One HTTPS GET, following GitHub's redirects, into memory or a file. Returns 1 on a 200. */
+#define RELAY_REPO_PATH "spongebobmoviept-lab/RuthlessControllerRelay"
+#define RELAY_REPO_PATH_W L"spongebobmoviept-lab/RuthlessControllerRelay"
+static int update_http_get(LPCWSTR host, LPCWSTR path, char *mem, size_t memLen, size_t *got, FILE *file) {
+    int ok = 0;
+    size_t have = 0;
+    HINTERNET ses = WinHttpOpen(L"RuthlessControllerRelay/" RELAY_VERSION_W, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    HINTERNET con = ses ? WinHttpConnect(ses, host, INTERNET_DEFAULT_HTTPS_PORT, 0) : NULL;
+    HINTERNET req = con ? WinHttpOpenRequest(con, L"GET", path, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE) : NULL;
+    if (req) WinHttpSetTimeouts(req, 10000, 10000, 10000, 30000);
+    if (req && WinHttpSendRequest(req, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) && WinHttpReceiveResponse(req, NULL)) {
+        DWORD status = 0, statusLen = sizeof(status), n = 0;
+        WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &status, &statusLen, WINHTTP_NO_HEADER_INDEX);
+        if (status == 200) {
+            static char chunk[65536];
+            ok = 1;
+            for (;;) {
+                char *into = file ? chunk : mem + have;
+                DWORD room = file ? (DWORD)sizeof(chunk) : (DWORD)(memLen - 1 - have);
+                if (!room) break;
+                if (!WinHttpReadData(req, into, room, &n)) { ok = 0; break; }
+                if (n == 0) break;
+                if (file && fwrite(chunk, 1, n, file) != n) { ok = 0; break; }
+                have += n;
+            }
+        }
+    }
+    if (req) WinHttpCloseHandle(req);
+    if (con) WinHttpCloseHandle(con);
+    if (ses) WinHttpCloseHandle(ses);
+    if (got) *got = have;
+    return ok;
+}
+
+/* Once per launch, in the background: is there a newer release? Quiet on any failure.
+   All it does with the answer is offer it on the title line. */
+static DWORD WINAPI update_check_thread(LPVOID arg) {
+    (void)arg;
+    static char body[65536];
+    size_t have = 0;
+    char tag[sizeof(g_update_tag)];
+    if (update_http_get(L"api.github.com", L"/repos/" RELAY_REPO_PATH_W L"/releases/latest", body, sizeof(body), &have, NULL)) {
+        body[have] = '\0';
+        if (update_tag_from_json(body, tag, sizeof(tag)) && relay_version_newer(tag, RELAY_VERSION)) {
+            strcpy(g_update_tag, tag);
+            InterlockedExchange(&g_update_ready, 1);
+            log_line("update check: %s is available", tag);
+        }
+    }
+    return 0;
+}
+
+static const char *const UPDATE_FILES[] = {"RuthlessControllerRelay.exe", "RuthlessControllerRelay_SAFE.exe", "RelayControl.exe"};
+#define UPDATE_FILE_COUNT (sizeof(UPDATE_FILES) / sizeof(UPDATE_FILES[0]))
+
+/* Runs a program from a full path, hidden, and returns its exit code (-1 if it wouldn't run or hung). */
+static long update_run(const char *exe, char *cmd, const char *dir, DWORD waitMs) {
+    STARTUPINFOA si = {.cb = sizeof(si)};
+    PROCESS_INFORMATION pi;
+    DWORD code = (DWORD)-1;
+    if (!CreateProcessA(exe, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, dir, &si, &pi)) return -1;
+    if (WaitForSingleObject(pi.hProcess, waitMs) == WAIT_OBJECT_0) GetExitCodeProcess(pi.hProcess, &code);
+    else TerminateProcess(pi.hProcess, 1);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    return (long)code;
+}
+
+/* Unpacks an update zip into tmp, checks the new relay runs, then swaps the programs in dir,
+   putting everything back if any step fails. Settings and drivers aren't touched.
+   Returns NULL on success, or what went wrong. */
+static const char *update_apply(const char *zip, const char *tmp, const char *dir) {
+    char tar[MAX_PATH], cmd[MAX_PATH * 3], src[MAX_PATH + 40], dst[MAX_PATH + 40], old[MAX_PATH + 44];
+
+    /* full path to Windows' own tar: an administrator program must not pick one up from the current folder */
+    if (!ExpandEnvironmentStringsA("%SystemRoot%\\System32\\tar.exe", tar, sizeof(tar))) return "couldn't find tar";
+    snprintf(cmd, sizeof(cmd), "\"%s\" -xf \"%s\" -C \"%s\"", tar, zip, tmp);
+    if (update_run(tar, cmd, tmp, 60000) != 0) return "couldn't unpack the download";
+
+    snprintf(src, sizeof(src), "%s\\%s", tmp, UPDATE_FILES[0]);
+    snprintf(cmd, sizeof(cmd), "\"%s\" --test-config", src);
+    if (update_run(src, cmd, tmp, 30000) != 0) return "the new version failed its self-test";
+
+    size_t done = 0;
+    const char *problem = NULL;
+    for (; done < UPDATE_FILE_COUNT; done++) {
+        snprintf(src, sizeof(src), "%s\\%s", tmp, UPDATE_FILES[done]);
+        snprintf(dst, sizeof(dst), "%s\\%s", dir, UPDATE_FILES[done]);
+        snprintf(old, sizeof(old), "%s.old", dst);
+        if (GetFileAttributesA(src) == INVALID_FILE_ATTRIBUTES) { problem = "the download was missing a file"; break; }
+        /* a running program can be renamed but not overwritten */
+        if (GetFileAttributesA(dst) != INVALID_FILE_ATTRIBUTES && !MoveFileExA(dst, old, MOVEFILE_REPLACE_EXISTING)) { problem = "couldn't replace a program file"; break; }
+        if (!CopyFileA(src, dst, FALSE)) {
+            MoveFileExA(old, dst, MOVEFILE_REPLACE_EXISTING);
+            problem = "couldn't copy the new program in";
+            break;
+        }
+    }
+    if (problem) {
+        while (done-- > 0) { /* back to exactly what was there */
+            snprintf(dst, sizeof(dst), "%s\\%s", dir, UPDATE_FILES[done]);
+            snprintf(old, sizeof(old), "%s.old", dst);
+            if (GetFileAttributesA(old) != INVALID_FILE_ATTRIBUTES) MoveFileExA(old, dst, MOVEFILE_REPLACE_EXISTING);
+        }
+        return problem;
+    }
+    return NULL;
+}
+
+/* Downloads this release's small update zip and applies it.
+   ponytail: trusts HTTPS from this GitHub repo, the same as downloading it by hand; no signature check. */
+static const char *update_install(const char *tag, const char *dir) {
+    char tmp[MAX_PATH], zip[MAX_PATH + 16];
+    wchar_t path[256];
+    if (!GetTempPathA(sizeof(tmp) - 40, tmp)) return "couldn't find the temp folder";
+    strcat(tmp, "RuthlessControllerRelay_update");
+    CreateDirectoryA(tmp, NULL);
+    snprintf(zip, sizeof(zip), "%s\\update.zip", tmp);
+    swprintf(path, 256, L"/" RELAY_REPO_PATH_W L"/releases/download/%hs/RuthlessControllerRelay_update.zip", tag);
+    FILE *f = fopen(zip, "wb");
+    if (!f) return "couldn't write to the temp folder";
+    size_t got = 0;
+    int ok = update_http_get(L"github.com", path, NULL, 0, &got, f);
+    if (fclose(f) != 0) ok = 0;
+    if (!ok || got == 0) return "the download failed";
+    return update_apply(zip, tmp, dir);
+}
+
+static BOOL WINAPI console_ctrl_handler(DWORD ctrl_type);
+
+/* U on the dashboard: asks first. Yes closes the relay afterward, since the new version only runs from a fresh start. */
+static void run_update_flow(void) {
+    char dir[MAX_PATH];
+    GetModuleFileNameA(NULL, dir, sizeof(dir));
+    char *slash = strrchr(dir, '\\');
+    if (slash) *slash = '\0';
+    clear_console();
+    set_color(CLR_WHITE_BR);
+    printf("=== UPDATE ===\n\n");
+    set_color(CLR_NORMAL);
+    printf("Version %s is available. You have " RELAY_VERSION ".\n\n", g_update_tag);
+    printf("Your settings stay as they are. The relay closes when it's done, so close\nyour game first.\n\n");
+    printf("Press Y to update now, any other key to cancel.\n\n");
+    if (head_setup_wait_key() != 'Y') {
+        clear_console();
+        return;
+    }
+    printf("Downloading...\n");
+    const char *problem = update_install(g_update_tag, dir);
+    if (problem) {
+        set_color(CLR_YELLOW_BR);
+        printf("\nNothing was changed: %s.\n", problem);
+        set_color(CLR_NORMAL);
+        printf("You can get it by hand from github.com/" RELAY_REPO_PATH "/releases\n\nPress any key.\n");
+        log_line("update: %s", problem);
+        head_setup_wait_key();
+        clear_console();
+        return;
+    }
+    set_color(CLR_GREEN_BR);
+    printf("\nUpdated to %s. Press any key to close the relay, then open it again.\n", g_update_tag);
+    set_color(CLR_NORMAL);
+    log_line("update: installed %s", g_update_tag);
+    head_setup_wait_key();
+    console_ctrl_handler(CTRL_CLOSE_EVENT);
+    ExitProcess(0);
+}
+
+/* Clears what the last update left behind. Best effort: the old program may still be closing. */
+static void update_cleanup(void) {
+    char dir[MAX_PATH], old[MAX_PATH + 44];
+    GetModuleFileNameA(NULL, dir, sizeof(dir));
+    char *slash = strrchr(dir, '\\');
+    if (slash) *slash = '\0';
+    for (size_t i = 0; i < UPDATE_FILE_COUNT; i++) {
+        snprintf(old, sizeof(old), "%s\\%s.old", dir, UPDATE_FILES[i]);
+        DeleteFileA(old);
+    }
+}
+
+/* Only ever starts once. */
+static void update_start_thread(void) {
+    static volatile LONG started = 0;
+    if (InterlockedExchange(&started, 1)) return;
+    HANDLE t = CreateThread(NULL, 0, update_check_thread, NULL, 0, NULL);
+    if (t) CloseHandle(t);
+}
+
+#endif
 
 /* Runs on its own OS-spawned thread the instant Ctrl+C is pressed, the
    console window is closed, or the process is otherwise asked to end --
@@ -6857,9 +7746,12 @@ static DWORD WINAPI vjoy_session_setup_thread(LPVOID arg) {
 static int service_ipc_requests(int connected) {
     int swapped = 0;
     LONG fl = InterlockedExchange(&g_ipc_fl_want, -1);
-    if (fl >= 0 && fl != g_freelook_enabled)
-        InterlockedExchange(&g_freelook_enabled, fl); /* session only -- the ini's freelook= stays the startup default;
-                                                          the main loop releases a lock/Alt on its next spin */
+    if (fl == 2) head_start_thread();
+    if (fl >= 0) {
+        InterlockedExchange(&g_head_mode, fl == 2);
+        InterlockedExchange(&g_freelook_enabled, fl != 0); /* session only -- the ini's freelook= stays the startup default;
+                                                              the main loop releases a lock/Alt on its next spin */
+    }
     LONG pad = InterlockedExchange(&g_ipc_pad_want, -1);
     if (pad >= 0 && connected && g_vigem_target && pad != g_vigem_emulate_ds4) { /* never "swap" to the type it
                                                                                      already is -- a swap pulls the
@@ -6915,7 +7807,7 @@ static void ipc_status_line(char *out, size_t len, const char *prefix) {
     }
     snprintf(out, len, "%s v=" RELAY_VERSION " state=%s mode=%s pad=%s padlive=%d freelook=%s look=%s batt=%s chg=%d ctrl=%s\n",
              prefix, state, mode == 1 ? "hotas" : mode == 0 ? "normal" : "unset", g_vigem_emulate_ds4 ? "ds4" : "x360",
-             g_vigem_target != NULL, g_freelook_enabled ? "on" : "off", look, batt, chg,
+             g_vigem_target != NULL, g_head_mode ? "head" : g_freelook_enabled ? "on" : "off", look, batt, chg,
              live ? describe_controller(g_backend) : "-");
 }
 
@@ -6968,9 +7860,10 @@ static void ipc_handle_client(HANDLE pipe, HANDLE ev) {
             break;
         }
         XINPUT_GAMEPAD snap = g_ipc_gp;
-        snprintf(reply, sizeof(reply), "ok lx=%d ly=%d rx=%d ry=%d lt=%u rt=%u btn=%u ps=%d\n",
+        snprintf(reply, sizeof(reply), "ok lx=%d ly=%d rx=%d ry=%d lt=%u rt=%u btn=%u ps=%d hs=%d hx=%ld hy=%ld\n",
                  snap.sThumbLX, snap.sThumbLY, snap.sThumbRX, snap.sThumbRY, (unsigned)snap.bLeftTrigger,
-                 (unsigned)snap.bRightTrigger, (unsigned)snap.wButtons, (int)g_ipc_ps);
+                 (unsigned)snap.bRightTrigger, (unsigned)snap.wButtons, (int)g_ipc_ps,
+                 (int)head_status(), (long)g_head_view_x, (long)g_head_view_y);
         break;
     }
     case IPC_CMD_QUIT:
@@ -6995,8 +7888,8 @@ static void ipc_handle_client(HANDLE pipe, HANDLE ev) {
         ipc_queue_want(&g_ipc_pad_want, g_vigem_emulate_ds4, c == IPC_CMD_PAD_TOGGLE, c == IPC_CMD_PAD_DS4);
         ipc_status_line(reply, sizeof(reply), "ok");
         break;
-    default: /* free look on/off/toggle */
-        ipc_queue_want(&g_ipc_fl_want, g_freelook_enabled, c == IPC_CMD_FL_TOGGLE, c == IPC_CMD_FL_ON);
+    default: /* free look on/off/toggle/head */
+        ipc_queue_want(&g_ipc_fl_want, g_freelook_enabled, c == IPC_CMD_FL_TOGGLE, c == IPC_CMD_FL_HEAD ? 2 : c == IPC_CMD_FL_ON);
         ipc_status_line(reply, sizeof(reply), "ok");
         break;
     }
@@ -7106,6 +7999,31 @@ static DWORD WINAPI control_pipe_thread(LPVOID arg) {
     return 0;
 }
 #endif
+
+/* Only one relay at a time: two would fight over the same vJoy device,
+   HidHide's hidden list and the virtual pad. A second launch brings the
+   running one's window to the front and closes itself. The mutex is held
+   for the rest of the run and Windows releases it when the process ends,
+   crash included. Global\ so a second Windows session can't start one
+   either (the drivers are machine-wide). */
+static BOOL CALLBACK find_other_relay_window(HWND h, LPARAM lp) {
+    char title[512];
+    if (h == GetConsoleWindow() || !IsWindowVisible(h) || !GetWindowTextA(h, title, sizeof(title))) return TRUE;
+    if (strstr(title, "RuthlessControllerRelay") || strstr(title, "Ruthless Controller Relay")) {
+        *(HWND *)lp = h;
+        return FALSE;
+    }
+    return TRUE;
+}
+
+static int another_relay_running(void) {
+    HANDLE m = CreateMutexA(NULL, FALSE, "Global\\RuthlessControllerRelay.Running");
+    if (m && GetLastError() == ERROR_ALREADY_EXISTS) {
+        CloseHandle(m);
+        return 1;
+    }
+    return 0; /* first one: m stays open (held) until this process ends */
+}
 
 int main(int argc, char **argv) {
     /* First thing, unconditionally: cheap, side-effect-free, and several
@@ -7371,6 +8289,7 @@ int main(int argc, char **argv) {
               "mode toggle / normal");
         CHECK(parse_ipc_command("freelook toggle") == IPC_CMD_FL_TOGGLE && parse_ipc_command("freelook off") == IPC_CMD_FL_OFF,
               "freelook toggle / off");
+        CHECK(parse_ipc_command("freelook head") == IPC_CMD_FL_HEAD, "freelook head");
         CHECK(parse_ipc_command("input") == IPC_CMD_INPUT && parse_ipc_command("QUIT\n") == IPC_CMD_QUIT, "input / quit");
         CHECK(parse_ipc_command("quit now") == IPC_CMD_BAD, "quit takes no arguments");
         CHECK(parse_ipc_command("mode") == IPC_CMD_BAD, "incomplete command rejected");
@@ -7383,6 +8302,57 @@ int main(int argc, char **argv) {
             memset(longcmd, 'a', sizeof(longcmd) - 1);
             longcmd[sizeof(longcmd) - 1] = '\0';
             CHECK(parse_ipc_command(longcmd) == IPC_CMD_BAD, "overlong input rejected");
+        }
+
+        printf("== head_axis_step (head tracking) ==\n");
+        {
+            head_axis_t a = {0};
+            CHECK(head_axis_step(&a, 5.0, 50, 0.15, 1) == 0, "first pose only sets the starting point, no jump");
+            CHECK(head_axis_step(&a, 5.1, 50, 0.15, 1) == 0, "wobble inside the dead zone is ignored");
+            CHECK(head_axis_step(&a, 15.0, 50, 0.15, 1) == 492, "10 degrees at 50/deg, minus the dead zone");
+            CHECK(head_axis_step(&a, 5.0, 50, 0.15, 1) == -484, "turning back reverses (-485 plus the 0.5 count carried over)");
+            CHECK(head_axis_step(&a, 25.0, 50, 0.15, 0) == 0, "gate closed: no output");
+            CHECK(head_axis_step(&a, 25.0, 50, 0.15, 1) == 0, "gate reopens with the head elsewhere: no jump");
+            CHECK(head_axis_step(&a, 90.0, 50, 0.15, 1) == 0, "tracker jump past the limit is dropped");
+            CHECK(a.ref == 90.0, "and the new position becomes the starting point");
+            CHECK(head_axis_step(&a, 100.0, -50, 0.15, 1) < 0, "negative speed flips direction");
+            head_axis_t b = {0};
+            int total = 0;
+            head_axis_step(&b, 0.0, 10, 0, 1);
+            for (int i = 1; i <= 100; i++) total += head_axis_step(&b, i * 0.01, 10, 0, 1);
+            CHECK(total == 9 || total == 10, "tiny moves add up instead of being lost");
+            CHECK(head_view(0, 45) == 0 && head_view(22.5, 45) == 50 && head_view(-22.5, 45) == -50, "head box: position scales");
+            CHECK(head_view(90, 45) == 100 && head_view(-90, 45) == -100, "head box: stays inside the box");
+        }
+
+        printf("== update check ==\n");
+        {
+            char tag[24];
+            CHECK(relay_version_newer("v1.4.0", "1.3.0") && relay_version_newer("1.3.1", "v1.3.0") && relay_version_newer("v2.0.0", "1.9.9"), "newer versions");
+            CHECK(relay_version_newer("v1.10.0", "1.9.0"), "compares numbers, not text");
+            CHECK(!relay_version_newer("v1.3.0", "1.3.0") && !relay_version_newer("v1.2.9", "1.3.0"), "same or older isn't newer");
+            CHECK(!relay_version_newer("garbage", "1.3.0"), "nonsense isn't newer");
+            CHECK(update_tag_from_json("{\"url\":\"x\",\"tag_name\": \"v1.4.0\",\"name\":\"y\"}", tag, sizeof(tag)) && !strcmp(tag, "v1.4.0"), "reads tag_name");
+            CHECK(!update_tag_from_json("{\"tag_name\":\"v1.4.0\\u001b[2J\"}", tag, sizeof(tag)), "tag with odd characters rejected");
+            CHECK(!update_tag_from_json("{\"tag_name\":\"1.1111111111111111111111111111\"}", tag, sizeof(tag)), "overlong tag rejected");
+            CHECK(!update_tag_from_json("{\"message\":\"Not Found\"}", tag, sizeof(tag)), "no tag_name");
+        }
+
+        printf("== head tracking setup ==\n");
+        {
+            char out[2048], list[256];
+            CHECK(head_profile_with_camera(NULL, "My Cam", out, sizeof(out)) && strstr(out, "[neuralnet-tracker]\ncamera-name=My Cam\n") && strstr(out, "protocol-dll=udp"), "default profile gets the camera");
+            CHECK(head_profile_with_camera("[tracker-pt]\ncamera-name=Other\n\n[neuralnet-tracker]\ncamera-name=Old\nnum-threads=4\n\n[udp-proto]\nport=4242\n", "New", out, sizeof(out)) &&
+                  strstr(out, "[tracker-pt]\ncamera-name=Other\n") && strstr(out, "[neuralnet-tracker]\ncamera-name=New\nnum-threads=4\n") && !strstr(out, "Old"), "only the tracker's camera changes, tuning kept");
+            CHECK(head_profile_with_camera("[neuralnet-tracker]\nnum-threads=4\n\n[udp-proto]\ncamera-name=Nope\n", "New", out, sizeof(out)) &&
+                  strstr(out, "[neuralnet-tracker]\ncamera-name=New\nnum-threads=4\n") && strstr(out, "camera-name=Nope"), "no camera line yet: added in the right section");
+            CHECK(head_profile_with_camera("[modules]\ntracker-dll=pt\n", "New", out, sizeof(out)) && strstr(out, "camera-name=New"), "profile without the section: default used");
+            CHECK(!head_profile_with_camera(NULL, "My Cam", out, 16), "too small is refused");
+            CHECK(head_detector_list("", "game.exe", "p.ini", list, sizeof(list)) && !strcmp(list, "game.exe\x1fp.ini"), "first game");
+            CHECK(head_detector_list("a.exe\x1fq.ini", "game.exe", "p.ini", list, sizeof(list)) && !strcmp(list, "a.exe\x1fq.ini\x1egame.exe\x1fp.ini"), "keeps other games");
+            CHECK(head_detector_list("game.exe\x1fq.ini", "game.exe", "p.ini", list, sizeof(list)) && !strcmp(list, "game.exe\x1fq.ini"), "game already listed stays");
+        }
+        {
         }
 
 #undef CHECK
@@ -7415,6 +8385,19 @@ int main(int argc, char **argv) {
        don't need this; this is specifically for the actual gaming
        session, where a friend hitting a genuine crash is the whole
        reason this exists. */
+    if (another_relay_running()) {
+        printf("Ruthless Controller Relay is already running -- bringing it to the front.\n"
+               "This window closes in a moment.\n");
+        HWND other = NULL;
+        EnumWindows(find_other_relay_window, (LPARAM)&other);
+        if (other) {
+            if (IsIconic(other)) ShowWindow(other, SW_RESTORE);
+            SetForegroundWindow(other);
+        }
+        Sleep(2500);
+        return 0;
+    }
+
     install_crash_handler();
 
     UINT rid = 2;
@@ -7537,6 +8520,9 @@ int main(int argc, char **argv) {
         }
     }
 #ifndef SAFE_MODE_NO_EXTRAS
+    if (g_head_mode) head_start_thread(); /* freelook=head in the ini */
+    update_cleanup();
+    if (g_update_check) update_start_thread();
     if (g_control_pipe_enabled) { /* best effort: the relay works exactly the same without it */
         HANDLE ctlPipe = control_pipe_create();
         HANDLE ctlThread = ctlPipe != INVALID_HANDLE_VALUE ? CreateThread(NULL, 0, control_pipe_thread, ctlPipe, 0, NULL) : NULL;
@@ -7930,10 +8916,11 @@ int main(int argc, char **argv) {
                     /* Pressed: a fresh look. Also how a tap unlocks -- the
                        lock is dropped here, so letting go resets as usual. */
                     lookLocked = lookLockArmed = 0;
+                    InterlockedExchange(&g_head_stick_sent, 0);
                 } else if (!lookNow && lookHeld && modeNow == 1) {
                     /* Let go in HOTAS mode (not "left HOTAS mode while holding"). */
                     if (lookLockArmed) lookLocked = 1;
-                    else lookResetUntil = nowTick + FREELOOK_RESET_PULSE_MS;
+                    else freelook_let_go(&lookResetUntil, nowTick);
                     lookLockArmed = 0;
                 }
                 if (lookNow != lookHeld) {
@@ -7945,7 +8932,7 @@ int main(int argc, char **argv) {
                         lookLockArmed = !lookLockArmed; /* R3 while looking: arm/cancel the lock */
                     } else {
                         lookLocked = 0; /* R3 on its own while locked: unlock + snap back now */
-                        lookResetUntil = nowTick + FREELOOK_RESET_PULSE_MS;
+                        freelook_recenter(&lookResetUntil, nowTick);
                     }
                     lockBtnSwallowed = 1;
                     look_changed = 1;
@@ -7963,14 +8950,19 @@ int main(int argc, char **argv) {
                    the moment neither applies (incl. leaving HOTAS mode);
                    the stick only moves the mouse while RB is actually held. */
                 if (FREELOOK_USE_MOUSE) {
-                    int wantAlt = modeNow == 1 && (lookHeld || lookLocked);
+                    /* Head mode works like holding RB all the time: Left Alt stays held while
+                       the game has the mouse, and letting go of RB drops Alt for the reset tap,
+                       the same order that recenters normal free look. Holding RB there hands the
+                       camera to the stick, head paused, unless the game doesn't have the mouse
+                       (the stick would drag the desktop cursor). */
+                    int wantAlt = modeNow == 1 && (g_head_mode ? g_head_gate_open && lookResetUntil == 0 : lookHeld || lookLocked);
                     if (wantAlt && !g_freelook_alt_held) {
                         InterlockedExchange(&g_freelook_alt_held, 1);
                         freelook_send_alt(1);
                     } else if (!wantAlt && g_freelook_alt_held) {
                         freelook_release_alt();
                     }
-                    InterlockedExchange(&g_freelook_mouse_x, lookHeld ? gp.sThumbRX : 0);
+                    InterlockedExchange(&g_freelook_mouse_x, lookHeld && (!g_head_mode || g_head_gate_open) ? gp.sThumbRX : 0);
                 }
             }
 
@@ -8053,7 +9045,7 @@ int main(int argc, char **argv) {
                            need up and down, and I need that to work still
                            when I'm in free look"). Slider1 (look up/down)
                            stays centered. */
-                        g_vjoy_pos.wAxisXRot = i16_to_axis(lookHeld ? 0 : gp.sThumbRX);
+                        g_vjoy_pos.wAxisXRot = i16_to_axis(lookHeld && (!g_head_mode || g_head_gate_open) ? 0 : gp.sThumbRX);
                         g_vjoy_pos.wAxisYRot = i16_to_axis(nry);
                         if (lookHeld && !FREELOOK_USE_BUTTONS && !FREELOOK_USE_MOUSE) g_vjoy_pos.wSlider = i16_to_axis(gp.sThumbRX);
                     }
@@ -8219,16 +9211,41 @@ int main(int argc, char **argv) {
                     run_button_map_flow(backend, userIndex);
                     InterlockedExchange(&g_relay_state, RELAY_STATE_CONNECTED);
                     QueryPerformanceCounter(&lastPrint);
-                } else if (FREELOOK_USE_MOUSE && g_freelook_enabled && (key == '+' || key == '=' || key == '-' || key == '_')) {
-                    /* Mouse free-look speed, live, 20% steps -- see FREELOOK_USE_MOUSE.
-                       Saved straight to the ini (freelook_speed=) so it sticks. */
-                    LONG s = g_freelook_mouse_speed;
-                    s = (key == '+' || key == '=') ? s + s / 5 : s - s / 5;
-                    if (s < 200) s = 200;
-                    if (s > 40000) s = 40000;
-                    InterlockedExchange(&g_freelook_mouse_speed, s);
+#ifndef SAFE_MODE_NO_EXTRAS
+                } else if (key == 'H') {
+                    InterlockedExchange(&g_relay_state, RELAY_STATE_MENU);
+                    run_head_setup_flow();
+                    InterlockedExchange(&g_relay_state, RELAY_STATE_CONNECTED);
+                    QueryPerformanceCounter(&lastPrint);
+                } else if (key == 'F') {
+                    /* Off > Normal > Head, the same order as a Stream Deck key. The main loop lets go of Alt and any lock on its next spin. */
+                    LONG next = g_head_mode ? 0 : g_freelook_enabled ? 2 : 1;
+                    if (next == 2) head_start_thread();
+                    InterlockedExchange(&g_head_mode, next == 2);
+                    InterlockedExchange(&g_freelook_enabled, next != 0);
                     save_config(g_hotkey_mods, g_hotkey_vk, g_toggle_button_mask, g_toggle_hold_ms, g_game_path);
-                    log_line("freelook: mouse speed now %ld", (long)s);
+                } else if (key == 'C') {
+                    InterlockedExchange(&g_update_check, !g_update_check);
+                    if (g_update_check) update_start_thread();
+                    save_config(g_hotkey_mods, g_hotkey_vk, g_toggle_button_mask, g_toggle_hold_ms, g_game_path);
+                } else if (key == 'U' && g_update_ready) {
+                    InterlockedExchange(&g_relay_state, RELAY_STATE_MENU);
+                    run_update_flow();
+                    InterlockedExchange(&g_relay_state, RELAY_STATE_CONNECTED);
+                    QueryPerformanceCounter(&lastPrint);
+#endif
+                } else if (FREELOOK_USE_MOUSE && g_freelook_enabled && (key == '+' || key == '=' || key == '-' || key == '_')) {
+                    /* Mouse free-look speed (or head speed in head mode), live, 20% steps -- see FREELOOK_USE_MOUSE.
+                       Saved straight to the ini (freelook_speed= / head_speed=) so it sticks. */
+                    int head = g_head_mode != 0;
+                    LONG s = head ? g_head_speed : g_freelook_mouse_speed;
+                    LONG step = s / 5 ? s / 5 : 1;
+                    s = (key == '+' || key == '=') ? s + step : s - step;
+                    if (s < (head ? 1 : 200)) s = head ? 1 : 200;
+                    if (s > (head ? 2000 : 40000)) s = head ? 2000 : 40000;
+                    InterlockedExchange(head ? &g_head_speed : &g_freelook_mouse_speed, s);
+                    save_config(g_hotkey_mods, g_hotkey_vk, g_toggle_button_mask, g_toggle_hold_ms, g_game_path);
+                    log_line("%s now %ld", head ? "head tracking: speed" : "freelook: mouse speed", (long)s);
                 } else if (key == 'V') {
                     /* Live switch between the emulated virtual controller
                        looking like an Xbox 360 pad or a DualShock 4 -- the

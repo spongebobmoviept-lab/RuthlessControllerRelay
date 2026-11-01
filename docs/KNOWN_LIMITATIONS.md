@@ -103,11 +103,17 @@ Before getting into the one real risk area, it's worth being direct about what t
 
 Raised specifically because of [a WARDOGS community discussion](https://www.reddit.com/r/WarDogs/comments/1w61gq5/guide_fly_with_mkb_or_controller_with_super/) mentioning that [Interception](https://github.com/oblitum/Interception) (the kernel-mode driver several keyboard/mouse-to-joystick remapping tools, including UCR, use to read and remap raw keystrokes) is something a WARDOGS developer said would be watched for — worth being precise about, since this project has nothing to do with that category of tool at all.
 
-**Checked directly against the source, not assumed:** this project contains no `SetWindowsHookEx`, no low-level keyboard hook, no `SendInput`/keystroke-injection call, and no dependency on Interception or anything like it, anywhere. Its entire keyboard footprint is two things: `RegisterHotKey` for its own mode-toggle shortcut (the same ordinary, unprivileged Windows API countless normal utilities use for a global shortcut — it only ever reacts to that one specific combo and has no visibility into any other keystroke), and `GetAsyncKeyState`, used only while you're actively at this tool's own console pressing R to choose a new hotkey — a poll, not a hook, and it never runs during actual gameplay.
+**Checked directly against the source, not assumed:** this project contains no `SetWindowsHookEx`, no low-level keyboard or mouse hook, and no kernel-level input filter of its own. It doesn't intercept or change your real keyboard or mouse. It does *send* software input in the two optional features described below.
 
 **Why that distinction matters:** Interception and tools built on it (UCR being the best-known) exist specifically to intercept and remap real keyboard/mouse input at the driver level — turning WASD-and-mouselook into synthesized joystick axes, for example. That's a meaningfully different, more invasive category than what this project does, which is exactly why some anti-cheat vendors watch for it specifically. This project only ever reads an actual physical game **controller** (joystick/gamepad) through ordinary consumer APIs (XInput, DirectInput, raw HID — the same ones any normal controller application uses) and re-presents that same, unmodified data through a virtual joystick or gamepad. Keyboard and mouse input for actual gameplay is never touched, read, remapped, or injected by this tool in any way.
 
 That said, this doesn't make the driver-presence concern below disappear — vJoy/HidHide/ViGEmBus are a separate, narrower category of thing some kernel-level anti-cheat scans watch for regardless of what a tool actually does with them. Read on for exactly what is and isn't confirmed about that.
+
+### Free look and head tracking send software input
+
+Both are optional. **Free look** holds Left Alt and sends mouse movement while you hold RB. **Head tracking** holds Left Alt and sends mouse movement constantly while it's on and the game has the mouse. This is the same kind of input DS4Windows and Steam Input produce, and the movement comes from your real stick or your real head, not from anything aiming for you. Other head-tracking setups commonly drive the mouse the same way.
+
+Still, **some anti-cheat studies how players use the mouse and keyboard**, and software mouse movement mixed with joystick flying isn't what most players' input looks like. No bans from this are known, but nobody outside a game's developers can promise that, so it's your call. Turning free look off (`F`, or `freelook=off`) stops all of it. `--uninstall` isn't needed for that.
 
 ### The actual risk, scoped precisely
 

@@ -469,6 +469,8 @@ static int ui_reg_dword(const char *key, const char *value, DWORD fallback) {
     return (int)v;
 }
 
+static int g_backdrop_failed = 0; /* Windows older than build 22621 can't do it: solid colors from then on */
+
 /* Follows Windows: light or dark, and its accent color. There's no picker. */
 static void ui_load_theme(ui_theme_t *t) {
     const char *personal = "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize";
@@ -479,7 +481,7 @@ static void ui_load_theme(ui_theme_t *t) {
     int ps = g_backend != BACKEND_XINPUT;
     memset(t, 0, sizeof(*t));
     t->dark = dark;
-    t->acrylic = transparency;
+    t->acrylic = transparency && !g_backdrop_failed;
     BYTE pal[32] = {0};
     DWORD n = sizeof(pal);
     int has_pal = RegGetValueA(HKEY_CURRENT_USER, "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Accent",
@@ -995,7 +997,12 @@ static void ui_draw_scene_static(void) {
         swprintf(hint, 128, L"%hs or %ls %hs switches mode", hk, g_toggle_hold_ms ? L"hold" : L"press", btn);
 #endif
     }
-    ui_txt(hint, 180, 444, 400, 32, F_SMALL, g_th.sec, 1);
+    if (g_ui_had_crash) {
+        ui_txt(L"Something went wrong last time. Click here to report it.", 180, 444, 400, 32, F_SMALL, g_hover == H_REPORT ? g_th.text : g_th.warn, 1);
+        ui_hit_scene(180, 444, 400, 32, H_REPORT);
+    } else {
+        ui_txt(hint, 180, 444, 400, 32, F_SMALL, g_th.sec, 1);
+    }
 
     if (g_hover == H_GEAR) ui_rr(716, 444, 32, 32, 4, g_th.hover);
     ui_txt(L"\xE713", 716, 444, 32, 32, F_ICON18, g_th.text, 1);
@@ -1176,6 +1183,7 @@ static void ui_draw_details(void) {
     float y = 114;
     wchar_t v[160];
     ui_txt(L"This PC", 24, y, 300, 20, F_BODYB, g_th.text, 0);
+    ui_draw_small_button(616, y - 2, 128, NULL, L"Report a problem", H_REPORT, 0);
     y += 22;
     ui_details_row(&y, L"vJoy", service_exists("vjoy") == 1 ? L"Installed. Your virtual joystick." : L"Not found");
     ui_details_row(&y, L"HidHide", service_exists("HidHide") == 1 ? L"Installed. Keeps games from seeing the real pad." : L"Not found");
@@ -1200,8 +1208,6 @@ static void ui_draw_details(void) {
     ui_details_row(&y, L"Stream Deck", g_control_pipe_enabled ? L"Pipe on" : L"Pipe off");
     swprintf(v, 160, L"%d/s", g_rate_shown);
     ui_details_row(&y, L"Input changes", v);
-    y += 6;
-    ui_draw_small_button(24, y, 128, NULL, L"Report a problem", H_REPORT, 0);
 }
 
 /* ---------- Painting ---------- */
@@ -1351,6 +1357,8 @@ static void ui_paint(void) {
 
 static void ui_cam_sync(void);
 static void ui_pop_tick(void);
+static void ui_pop_theme_changed(void);
+static void ui_apply_backdrop(HWND h);
 static volatile LONG g_cam_seq;
 static LONG g_cam_seq_drawn;
 
@@ -1407,9 +1415,12 @@ static void ui_tick(void) {
         if (memcmp(&th, &g_th, sizeof(th))) {
             g_th = th;
             g_bake_dirty = 1;
+            ui_apply_backdrop(g_main.hwnd);
+            ui_pop_theme_changed();
         }
     }
     if (IsIconic(g_main.hwnd) || covered) {
+        ui_pop_tick();
         ui_set_rate(1000);
         return;
     }
@@ -1424,6 +1435,11 @@ static void ui_tick(void) {
         wchar_t title[96];
         swprintf(title, 96, L"Ruthless Controller Relay - %ls", w.summary);
         SetWindowTextW(g_main.hwnd, title);
+    }
+    static LONG crash_seen;
+    if (crash_seen != g_ui_had_crash) {
+        crash_seen = g_ui_had_crash;
+        g_bake_dirty = 1;
     }
     int ps = g_backend != BACKEND_XINPUT;
     if (ps != g_ps_ui) {
@@ -1532,18 +1548,20 @@ static void ui_quit(void);
 /* ---------- Report a problem: goes through the user's own browser and GitHub account, nothing is sent until they press Submit ---------- */
 
 #define UI_REPO_URL "https://github.com/" RELAY_REPO_PATH
+#define UI_PREV_LOG_FILE "driver_install_log.prev.txt"
+static void ui_copy_text(const char *text);
 
 static void ui_open_url(const char *url) {
     /* We run elevated. Going through Explorer opens it in their normal browser, not an admin one. */
     ShellExecuteA(NULL, "open", "explorer.exe", url, NULL, SW_SHOWNORMAL);
 }
 
-/* The end of the log, with their user name taken out of any path. */
-static void ui_log_tail(char *out, size_t n, int max_bytes) {
+/* The end of a log, with their user name taken out of any path. */
+static void ui_log_tail(const char *file, char *out, size_t n, int max_bytes) {
     char path[MAX_PATH + 32], dir[MAX_PATH];
     out[0] = '\0';
     get_exe_dir(dir, sizeof(dir));
-    snprintf(path, sizeof(path), "%s%s", dir, INSTALL_LOG_FILE);
+    snprintf(path, sizeof(path), "%s%s", dir, file);
     FILE *f = fopen(path, "rb");
     if (!f) return;
     fseek(f, 0, SEEK_END);
@@ -1564,7 +1582,7 @@ static void ui_log_tail(char *out, size_t n, int max_bytes) {
     }
 }
 
-static void ui_details_text(char *out, size_t n, int log_bytes) {
+static void ui_report_head(char *out, size_t n) {
     OSVERSIONINFOW v = {sizeof(v)};
     typedef LONG(WINAPI * rtl_ver_t)(OSVERSIONINFOW *);
     rtl_ver_t ver = (rtl_ver_t)(void *)GetProcAddress(GetModuleHandleA("ntdll.dll"), "RtlGetVersion");
@@ -1576,33 +1594,68 @@ static void ui_details_text(char *out, size_t n, int log_bytes) {
     ui_words_t w;
     ui_read_state(&st);
     ui_status(&st, &w);
-    char log[3000];
-    ui_log_tail(log, sizeof(log), log_bytes);
     snprintf(out, n,
              "Version: " RELAY_VERSION "\nWindows build: %lu\nController: %s\nState: %ls\nHidden: %s\nDrivers: vJoy %s, HidHide %s, ViGEmBus %s\n"
-             "Mode: %ld, free look %s, toggle %s or %s\nUpdates/sec: %ld\n\nLast lines of the log:\n%s",
+             "Mode: %ld, free look %s, toggle %s or %s\nUpdates/sec: %ld\n%s",
              (unsigned long)v.dwBuildNumber, g_relay_state == RELAY_STATE_CONNECTED ? describe_controller(g_backend) : "none", w.summary,
              g_hidhide_registered ? "yes" : "no", service_exists("vjoy") == 1 ? "ok" : "missing", service_exists("HidHide") == 1 ? "ok" : "missing",
              service_exists("ViGEmBus") == 1 ? "ok" : "missing", (long)g_hidden_mode, g_head_mode ? "head" : g_freelook_enabled ? "stick" : "off", hk, btn,
-             (long)g_ui_rate, log);
+             (long)g_ui_rate, g_ui_prev_crash ? "Crashed last time: yes\n" : "");
 }
 
-static void ui_report_problem(void) {
-    char details[3800];
-    ui_details_text(details, sizeof(details), 1400);
-    char body[4400];
-    snprintf(body, sizeof(body), "**What happened?**\n\n\n\n**What did you expect?**\n\n\n\n<details><summary>Details the relay filled in</summary>\n\n```\n%s\n```\n</details>\n", details);
-    size_t cap = strlen(body) * 3 + 200;
-    char *url = (char *)malloc(cap);
-    if (!url) return;
-    int at = snprintf(url, cap, UI_REPO_URL "/issues/new?title=&body=");
-    for (const unsigned char *p = (const unsigned char *)body; *p && (size_t)at < cap - 4; p++) {
-        if (isalnum(*p) || *p == '-' || *p == '_' || *p == '.' || *p == '~') url[at++] = (char)*p;
-        else at += sprintf(url + at, "%%%02X", *p);
+static void ui_report_body(char *out, size_t n, const char *head, const char *log) {
+    snprintf(out, n, "**What happened?**\n\n\n\n**What did you expect?**\n\n\n\n<details><summary>Details the relay filled in</summary>\n\n```\n%s\nLast lines of the log:\n%s\n```\n</details>\n", head, log);
+}
+
+/* Returns the encoded length, or -1 if it doesn't fit. */
+static int ui_url_encode(const char *src, char *dst, int cap) {
+    int at = 0;
+    for (const unsigned char *p = (const unsigned char *)src; *p; p++) {
+        if (at + 4 >= cap) return -1;
+        if (isalnum(*p) || *p == '-' || *p == '_' || *p == '.' || *p == '~') dst[at++] = (char)*p;
+        else at += sprintf(dst + at, "%%%02X", *p);
     }
-    url[at] = '\0';
-    ui_open_url(url);
-    free(url);
+    dst[at] = '\0';
+    return at;
+}
+
+/* Assume they aren't signed in. GitHub sends them through sign-in with this whole link inside another one, and
+   measured 2026-11-01 it survives that at 4,032 characters and gives a 500 error page at 5,976. So the link stays
+   well under, dropping log lines until it fits. The whole report goes on the clipboard anyway. */
+#define UI_REPORT_URL_MAX 3400
+#define UI_ISSUE_URL UI_REPO_URL "/issues/new?title=&body="
+
+static int ui_report_url(char *url, int cap, const char *head, const char *log) {
+    static const int keep[] = {1200, 800, 500, 250, 0};
+    int base = (int)strlen(UI_ISSUE_URL);
+    if (cap > UI_REPORT_URL_MAX + 1) cap = UI_REPORT_URL_MAX + 1;
+    size_t room = strlen(head) + strlen(log) + 300;
+    char *body = (char *)malloc(room);
+    if (!body) return -1;
+    int result = -1;
+    memcpy(url, UI_ISSUE_URL, (size_t)base + 1);
+    for (size_t i = 0; i < sizeof(keep) / sizeof(keep[0]) && result < 0; i++) {
+        size_t ll = strlen(log);
+        const char *tail = ll > (size_t)keep[i] ? log + ll - keep[i] : log;
+        if (tail != log) {
+            const char *nl = strchr(tail, '\n');
+            tail = nl ? nl + 1 : log + ll;
+        }
+        ui_report_body(body, room, head, tail);
+        int n = ui_url_encode(body, url + base, cap - base);
+        if (n >= 0) result = base + n;
+    }
+    free(body);
+    return result;
+}
+
+static void ui_report_send(int open) {
+    char head[800], log[3000], full[4200], url[UI_REPORT_URL_MAX + 1];
+    ui_report_head(head, sizeof(head));
+    ui_log_tail(g_ui_prev_crash ? UI_PREV_LOG_FILE : INSTALL_LOG_FILE, log, sizeof(log), 2800);
+    ui_report_body(full, sizeof(full), head, log);
+    ui_copy_text(full);
+    if (open && ui_report_url(url, sizeof(url), head, log) > 0) ui_open_url(url);
 }
 
 static void ui_copy_text(const char *text) {
@@ -1685,7 +1738,7 @@ static void ui_draw_camera(void) {
 
 /* ---------- The settings popup. Its own window beside the panel, so you watch what you're changing ---------- */
 
-enum { PG_NONE = 0, PG_RACK, PG_MODE, PG_PAD, PG_LOOK, PG_HEAD, PG_MAP, PG_GAME, PG_DECK, PG_UPDATES, PG_APP, PG_HELP, PG_LINK };
+enum { PG_NONE = 0, PG_RACK, PG_MODE, PG_PAD, PG_LOOK, PG_HEAD, PG_MAP, PG_GAME, PG_DECK, PG_UPDATES, PG_APP, PG_HELP, PG_LINK, PG_REPORT };
 enum {
     P_NONE = 0, P_BACK, P_TILE, /* P_TILE + PG_* */
     P_QUIT = 40, P_QUIT_YES, P_QUIT_NO,
@@ -1694,7 +1747,7 @@ enum {
     P_SPEED, P_SPEED_DOWN, P_SPEED_UP, P_YAW, P_PITCH, P_DEAD, P_FLIP_Y, P_FLIP_P, P_SHOW_CAM, P_RECENTER, P_CAM = 100, /* + camera index */
     P_CAMMODE = 120, /* + mode index */
     P_MAP = 130, P_MAP_RESET, P_GAME_CHANGE, P_GAME_LAUNCH, P_PIPE, P_DISCORD, P_DISCORD_NONE, P_UPDCHECK, P_UPDATE_NOW, P_UPDATE_RESTART,
-    P_TRAY, P_CONSOLE, P_CONSOLE_MODE, P_REPORT, P_COPY, P_OPENLOG, P_OPENINI, P_RELEASES
+    P_TRAY, P_CONSOLE, P_CONSOLE_MODE, P_REPORT, P_REPORT_OPEN, P_REPORT_COPY, P_OPENLOG, P_OPENINI, P_RELEASES
 };
 enum { CAP_NONE = 0, CAP_HOTKEY, CAP_BUTTON, CAP_DISCORD, CAP_MAP1, CAP_MAP2 };
 
@@ -1704,7 +1757,8 @@ static float g_py, g_pop_scroll = 0, g_pop_h = 300, g_pop_max_h = 800;
 static ui_hit_t g_pop_hits[80];
 static int g_pop_n = 0;
 static int g_cap = CAP_NONE;
-static DWORD g_cap_end = 0, g_cap_saved = 0, g_cap_accum = 0, g_cap_first = 0;
+static DWORD g_cap_end = 0, g_cap_saved = 0, g_cap_accum = 0, g_cap_first = 0, g_cap_since = 0;
+static int g_cap_wait_release = 0;
 static wchar_t g_pop_msg[160];
 static char g_cams[16][128];
 static volatile LONG g_cams_n = -1;
@@ -2091,13 +2145,24 @@ static void ui_page_app(void) {
     p_note(L"Next start: console only, no window, no tray, exactly how 1.x worked. Start it with --window to come back.");
 }
 
+static wchar_t g_report_text[3400];
+
+static void ui_page_report(void) {
+    p_note(L"Say what happened on GitHub, with the details below already filled in. Nothing is sent until you press Submit there.");
+    p_note(L"You need a free GitHub account. If you aren't signed in, it asks you to sign in or make one first, then brings you back. The whole report is copied too, so if the box comes up empty, click in it and press Ctrl+V.");
+    p_button(L"Copy it and open GitHub", P_REPORT_OPEN, 1);
+    p_button(L"Just copy it", P_REPORT_COPY, 0);
+    if (g_pop_msg[0]) p_note(g_pop_msg);
+    p_label(L"What's in it");
+    p_note(g_report_text);
+    p_note(L"Your user name is taken out of file paths. You can change anything before you press Submit.");
+}
+
 static void ui_page_help(void) {
     p_button(L"Report a problem", P_REPORT, 1);
-    p_note(L"Opens GitHub in your browser with the details filled in, so you only have to say what happened. You can read all of it first, and nothing is sent until you press Submit.");
-    p_button_at(PX, g_py, 160, L"Copy details", P_COPY, 0);
-    p_button_at(PX + 168, g_py, 160, L"Open log", P_OPENLOG, 0);
+    p_button_at(PX, g_py, 160, L"Open log", P_OPENLOG, 0);
+    p_button_at(PX + 168, g_py, 160, L"Open settings file", P_OPENINI, 0);
     g_py += 40;
-    p_button(L"Open settings file", P_OPENINI, 0);
     p_label(L"In flight");
     p_note(L"Hold RB to look, R3 while holding locks the camera, tap RB to unlock. In head mode, tap RB to recenter.");
     p_label(L"If something goes wrong");
@@ -2165,6 +2230,7 @@ static void ui_pop_paint(void) {
         case PG_APP: p_title(L"App"); ui_page_app(); break;
         case PG_HELP: p_title(L"Help"); ui_page_help(); break;
         case PG_LINK: p_title(L"Link"); ui_page_link(); break;
+        case PG_REPORT: p_title(L"Report a problem"); ui_page_report(); break;
         default: break;
     }
     float content = g_py + 8;
@@ -2226,6 +2292,16 @@ static void ui_pop_go(int page) {
     g_pop_msg[0] = 0;
     g_pop_hover = P_NONE;
     g_pop_dirty = 1;
+    if (page == PG_REPORT) {
+        char head[800], log[3000], all[3400];
+        ui_report_head(head, sizeof(head));
+        ui_log_tail(g_ui_prev_crash ? UI_PREV_LOG_FILE : INSTALL_LOG_FILE, log, sizeof(log), 1200);
+        snprintf(all, sizeof(all), "%s\nLast lines of the log:\n%s", head, log);
+        MultiByteToWideChar(CP_ACP, 0, all, -1, g_report_text, 3400);
+        g_report_text[3399] = 0;
+        InterlockedExchange(&g_ui_had_crash, 0); /* the footer's nudge has done its job */
+        g_bake_dirty = 1;
+    }
     if (page == PG_HEAD) {
         InterlockedExchange(&g_cams_n, -1);
         HANDLE t = CreateThread(NULL, 0, ui_list_cams_thread, NULL, 0, NULL);
@@ -2243,6 +2319,10 @@ static void ui_cap_cancel(void) {
 static void ui_pop_close(void) {
     if (!g_pop.hwnd) return;
     if (g_cap) ui_cap_cancel();
+    if (g_save_at) { /* a slider's save was still waiting */
+        g_save_at = 0;
+        g_ui_cfg_dirty = 1;
+    }
     HWND h = g_pop.hwnd;
     g_pop.hwnd = NULL;
     ui_release(&g_pop.br);
@@ -2291,7 +2371,6 @@ static int ui_one_bit(DWORD m) { return m && !(m & (m - 1)); }
 
 /* While a capture waits. The buttons still reach the game: nothing here touches the input loop. */
 static void ui_cap_tick(void) {
-    static DWORD held_prev;
     static int prev_sec;
     if (!g_cap || g_cap == CAP_HOTKEY) {
         if (g_cap == CAP_HOTKEY && (int)(g_cap_end - GetTickCount()) <= 0) ui_cap_cancel();
@@ -2308,16 +2387,26 @@ static void ui_cap_tick(void) {
         g_pop_dirty = 1;
     }
     if (g_relay_state != RELAY_STATE_CONNECTED) return;
+    /* What's pressed in the 300 ms after the first press is the answer, so a tap counts and two buttons can go together.
+       More than two means the pad was busy, not choosing: wait for the next press. In MAP2 the first button must be
+       let go first, or the same press would answer both questions. */
     DWORD held = ui_pad_held();
-    g_cap_accum |= held;
-    /* Let go of everything, and what was held is the answer. */
-    if (held || !held_prev || !g_cap_accum) {
-        held_prev = held;
-        return;
+    if (!g_cap_accum) {
+        if (g_cap_wait_release) {
+            if (held) return;
+            g_cap_wait_release = 0;
+        }
+        if (!held) return;
+        g_cap_since = now;
     }
-    held_prev = 0;
+    g_cap_accum |= held;
+    if (now - g_cap_since < 300) return;
     DWORD got = g_cap_accum;
     g_cap_accum = 0;
+    int bits = 0;
+    for (DWORD b = got; b; b &= b - 1) bits++;
+    if (bits > 2) return;
+    g_cap_wait_release = 1;
     if (g_cap == CAP_BUTTON) {
         g_toggle_button_mask = got;
         g_cap = CAP_NONE;
@@ -2436,6 +2525,7 @@ static void ui_pop_action(int id) {
             g_pop_dirty = 1;
             break;
         case P_BUTTON:
+            g_cap_wait_release = 1;
             g_cap_saved = g_toggle_button_mask;
             g_toggle_button_mask = 0; /* so the old button can't switch modes during the capture */
             g_cap_accum = 0;
@@ -2454,6 +2544,7 @@ static void ui_pop_action(int id) {
             break;
         case P_RECENTER: InterlockedExchange(&g_head_recenter, 1); break;
         case P_MAP:
+            g_cap_wait_release = 1;
             g_cap = CAP_MAP1;
             g_cap_accum = 0;
             g_cap_end = GetTickCount() + 10000;
@@ -2474,6 +2565,7 @@ static void ui_pop_action(int id) {
         }
         case P_PIPE: InterlockedExchange(&g_control_pipe_enabled, !g_control_pipe_enabled); ui_save_soon(); g_pop_dirty = 1; break;
         case P_DISCORD:
+            g_cap_wait_release = 1;
             g_cap_saved = g_vjoy_passthrough;
             g_vjoy_passthrough = 0;
             g_cap_accum = 0;
@@ -2504,16 +2596,17 @@ static void ui_pop_action(int id) {
             g_pop_dirty = 1;
             break;
         case P_CONSOLE_MODE: g_ui_cfg_console = !g_ui_cfg_console; ui_save_soon(); g_pop_dirty = 1; break;
-        case P_REPORT: ui_report_problem(); break;
-        case P_COPY: {
-            char *d = (char *)malloc(6000);
-            if (d) {
-                ui_details_text(d, 6000, 2800);
-                ui_copy_text(d);
-                free(d);
-            }
+        case P_REPORT: ui_pop_go(PG_REPORT); break;
+        case P_REPORT_OPEN:
+            ui_report_send(1);
+            wcscpy(g_pop_msg, L"Copied. GitHub is opening in your browser.");
+            g_pop_dirty = 1;
             break;
-        }
+        case P_REPORT_COPY:
+            ui_report_send(0);
+            wcscpy(g_pop_msg, L"Copied. Paste it wherever you need it.");
+            g_pop_dirty = 1;
+            break;
         case P_OPENLOG:
             get_exe_dir(dir, sizeof(dir));
             snprintf(path, sizeof(path), "%s%s", dir, INSTALL_LOG_FILE);
@@ -2673,6 +2766,13 @@ static void ui_pop_open(int page) {
     SetFocus(g_pop.hwnd);
 }
 
+static void ui_pop_theme_changed(void) {
+    if (!g_pop.hwnd) return;
+    BOOL dark = g_th.dark;
+    g_dwm_attr(g_pop.hwnd, 20, &dark, sizeof(dark));
+    g_pop_dirty = 1;
+}
+
 static void ui_pop_tick(void) {
     if (!g_pop.hwnd) return;
     ui_cap_tick();
@@ -2704,7 +2804,7 @@ static void ui_action(int id) {
             if (t) CloseHandle(t);
             break;
         }
-        case H_REPORT: ui_report_problem(); break;
+        case H_REPORT: ui_pop_open(PG_REPORT); break;
         case H_GEAR: ui_pop_open(PG_RACK); break;
         case H_BOX_MODE: ui_pop_open(PG_MODE); break;
         case H_BOX_LOOK: ui_pop_open(g_head_mode ? PG_HEAD : PG_LOOK); break;
@@ -2882,19 +2982,18 @@ static LRESULT CALLBACK ui_main_proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(h, m, wp, lp);
 }
 
+/* Again whenever Windows changes: the frame has to agree with what we draw on it. */
 static void ui_apply_backdrop(HWND h) {
     BOOL dark = g_th.dark;
     g_dwm_attr(h, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &dark, sizeof(dark));
-    if (g_th.acrylic) {
-        MARGINS mg = {-1, -1, -1, -1};
-        g_dwm_extend(h, &mg);
-        int kind = 3; /* DWMSBT_TRANSIENTWINDOW, available from build 22621 */
-        if (FAILED(g_dwm_attr(h, 38 /* DWMWA_SYSTEMBACKDROP_TYPE */, &kind, sizeof(kind)))) {
-            g_th.acrylic = 0;
-            MARGINS none = {0, 0, 0, 0};
-            g_dwm_extend(h, &none);
-        }
+    int kind = g_th.acrylic ? 3 : 1; /* DWMSBT_TRANSIENTWINDOW, or none */
+    if (FAILED(g_dwm_attr(h, 38 /* DWMWA_SYSTEMBACKDROP_TYPE */, &kind, sizeof(kind))) && g_th.acrylic) {
+        g_backdrop_failed = 1;
+        g_th.acrylic = 0;
     }
+    int e = g_th.acrylic ? -1 : 0;
+    MARGINS mg = {e, e, e, e};
+    g_dwm_extend(h, &mg);
 }
 
 static DWORD WINAPI ui_window_thread(LPVOID arg) {
@@ -3077,7 +3176,7 @@ static void ui_tray_add(HWND h) {
     g_ui_nid.uCallbackMessage = WM_UI_TRAY;
     g_ui_nid.hIcon = ui_tray_icon(0, 0);
     wcscpy(g_ui_nid.szTip, L"Ruthless Controller Relay");
-    Shell_NotifyIconW(NIM_ADD, &g_ui_nid);
+    if (!Shell_NotifyIconW(NIM_ADD, &g_ui_nid)) log_line("tray: couldn't add the icon yet (error %lu)", (unsigned long)GetLastError());
     g_ui_icon_key = 0xFFFFFFFF;
 }
 
@@ -3096,6 +3195,7 @@ static void ui_tray_remove(void) {
 }
 
 static void ui_quit(void) {
+    if (g_ui_cfg_dirty || g_save_at) save_config(g_hotkey_mods, g_hotkey_vk, g_toggle_button_mask, g_toggle_hold_ms, g_game_path);
     relay_cleanup();
     ExitProcess(0);
 }
@@ -3290,6 +3390,25 @@ static int ui_reboot_marker_present(void) {
     return GetFileAttributesA(marker) != INVALID_FILE_ATTRIBUTES;
 }
 
+/* The log starts fresh each run, so what happened last time would be gone. Keep it, and notice a crash in it. */
+static void ui_keep_last_log(const char *log_path) {
+    char prev[MAX_PATH + 40], line[256];
+    snprintf(prev, sizeof(prev), "%s", log_path);
+    char *slash = strrchr(prev, '\\');
+    if (!slash) return;
+    snprintf(slash + 1, sizeof(prev) - (size_t)(slash + 1 - prev), "%s", UI_PREV_LOG_FILE);
+    if (!MoveFileExA(log_path, prev, MOVEFILE_REPLACE_EXISTING)) return;
+    FILE *f = fopen(prev, "r");
+    if (!f) return;
+    while (fgets(line, sizeof(line), f))
+        if (strstr(line, "=== CRASH")) g_ui_prev_crash = 1;
+    fclose(f);
+    if (g_ui_prev_crash) {
+        InterlockedExchange(&g_ui_had_crash, 1);
+        if (g_ui_shell_hwnd) ui_tray_note(L"The relay closed unexpectedly last time", L"Open it and click the note at the bottom to report it, so it can get fixed.");
+    }
+}
+
 /* A second launch brings up the running one and quietly exits. */
 static int ui_signal_running(void) {
     HANDLE e = OpenEventA(EVENT_MODIFY_STATE, FALSE, "Global\\RuthlessControllerRelay.Show");
@@ -3354,6 +3473,19 @@ static int ui_selftest(void) {
     s.batt_chg = 1;
     ui_status(&s, &w);
     UI_CHECK(w.bar != 0xFF0000 && !w.batt_level, "charging clears it");
+    printf("== report link ==\n");
+    char url[UI_REPORT_URL_MAX + 1], head[600], log[3000];
+    memset(head, '#', sizeof(head) - 1); /* the worst case: every character takes three in a link */
+    head[sizeof(head) - 1] = 0;
+    memset(log, '\n', sizeof(log) - 1);
+    log[sizeof(log) - 1] = 0;
+    int n = ui_report_url(url, sizeof(url), head, log);
+    UI_CHECK(n > 0 && n <= UI_REPORT_URL_MAX, "a huge report still fits a link GitHub's sign-in can carry");
+    n = ui_report_url(url, sizeof(url), "Version: 1", "line one\nline two\n");
+    UI_CHECK(n > 0 && strstr(url, "What%20happened") && strstr(url, "line%20one"), "a small report keeps its log lines");
+    char tiny[8];
+    UI_CHECK(ui_url_encode("abcdefghij", tiny, sizeof(tiny)) == -1, "encoding never runs past its buffer");
+    UI_CHECK(ui_url_encode("a b&c", tiny, sizeof(tiny)) == -1 && ui_url_encode("a&", tiny, sizeof(tiny)) == 4 && !strcmp(tiny, "a%26"), "encodes what would break a link");
 #undef UI_CHECK
     return failed;
 }

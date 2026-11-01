@@ -149,6 +149,9 @@ static HWND g_ui_hwnd = NULL;              /* the main window, only while it's o
 static HWND ui_owner_hwnd(void);           /* relay_ui.c */
 static void ui_console_force(void);        /* relay_ui.c */
 static void ui_tray_remove(void);          /* relay_ui.c */
+static void ui_keep_last_log(const char *log_path); /* relay_ui.c */
+static volatile LONG g_ui_had_crash = 0;   /* the footer offers to report it */
+static int g_ui_prev_crash = 0;            /* the last run's log ends in a crash */
 static volatile LONG g_ui_tick = 0;        /* moves at 15 Hz while the loop is alive */
 static volatile LONG g_ui_rate = 0;        /* input changes per second */
 static volatile LONG g_ui_connecting = 0, g_ui_vjoy_busy = 0, g_ui_head_failed = 0, g_ui_hotkey_failed = 0;
@@ -159,6 +162,7 @@ static int g_ui_win_x = 0, g_ui_win_y = 0, g_ui_win_w = 0, g_ui_win_h = 0;
 #else
 #define ui_owner_hwnd() GetConsoleWindow()
 #define ui_console_force() ((void)0)
+#define ui_keep_last_log(p) ((void)0)
 #endif
 
 /* Path to a game exe to offer launching once the controller's ready --
@@ -1673,6 +1677,7 @@ static LONG WINAPI crash_filter(EXCEPTION_POINTERS *ep) {
         log_line("window: crashed with 0x%08lx at %p. The relay keeps running; reopen it from the tray.",
                  (unsigned long)ep->ExceptionRecord->ExceptionCode, ep->ExceptionRecord->ExceptionAddress);
         InterlockedExchange(&g_ui_window_thread_id, 0);
+        InterlockedExchange(&g_ui_had_crash, 1);
         ExitThread(1);
     }
 #endif
@@ -2092,6 +2097,9 @@ static DWORD WINAPI toggle_thread(LPVOID arg) {
     int registered = 0;
     if (g_hotkey_vk != 0) {
         registered = RegisterHotKey(NULL, TOGGLE_HOTKEY_ID, g_hotkey_mods, g_hotkey_vk) != 0;
+#ifndef SAFE_MODE_NO_EXTRAS
+        InterlockedExchange(&g_ui_hotkey_failed, !registered);
+#endif
         if (!registered) {
             char hk[32];
             format_hotkey(hk, sizeof(hk), g_hotkey_mods, g_hotkey_vk);
@@ -2112,6 +2120,9 @@ static DWORD WINAPI toggle_thread(LPVOID arg) {
                register the new one if it isn't itself "none". */
             if (registered) UnregisterHotKey(NULL, TOGGLE_HOTKEY_ID);
             registered = g_hotkey_vk != 0 && RegisterHotKey(NULL, TOGGLE_HOTKEY_ID, g_hotkey_mods, g_hotkey_vk) != 0;
+#ifndef SAFE_MODE_NO_EXTRAS
+            InterlockedExchange(&g_ui_hotkey_failed, g_hotkey_vk != 0 && !registered);
+#endif
         }
     }
     return 0;
@@ -6634,6 +6645,7 @@ static void check_and_install_drivers(void) {
        detail matters for diagnosing it. */
     char log_path[MAX_PATH + 32];
     get_install_log_path(log_path, sizeof(log_path));
+    ui_keep_last_log(log_path);
     FILE *fresh = fopen(log_path, "w");
     if (fresh) fclose(fresh);
     log_line("=== Driver check/install run ===");

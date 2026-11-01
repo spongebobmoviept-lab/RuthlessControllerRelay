@@ -1,12 +1,12 @@
 # Stream Deck and macro-pad control
 
-New in v1.2.0. **Optional and off by default.**
+Added in v1.2.0. **Optional and off by default.**
 
 Turn it on and a Stream Deck, any other macro pad, or a script can control the relay and read its status:
 
 - switch between **HOTAS mode and Normal mode**,
 - switch the virtual pad between **Xbox and PlayStation**,
-- turn **free look** on or off,
+- switch **free look** between off, normal and head tracking,
 - read the status: mode, controller, battery, free look, and the live sticks and buttons,
 - **close** the relay cleanly.
 
@@ -44,7 +44,7 @@ The release includes **`RelayControl.exe`**. It sends one command to the relay a
 | HOTAS mode | `mode hotas` |
 | Normal mode | `mode normal` |
 | Xbox / PlayStation virtual pad | `pad toggle` |
-| Free look on / off | `freelook toggle` |
+| Free look normal / off | `freelook toggle` |
 | Head tracking on | `freelook head` |
 | Close the relay | `quit` |
 
@@ -59,7 +59,7 @@ RelayControl.exe status
 ```
 prints, for example:
 ```
-ok v=1.2.0 state=connected mode=hotas pad=x360 padlive=1 freelook=on look=idle batt=80 chg=0 ctrl=Xbox-style controller (XInput)
+ok v=1.3.0 state=connected mode=hotas pad=x360 padlive=1 freelook=on look=idle batt=80 chg=0 ctrl=Xbox-style controller (XInput)
 ```
 
 Exit codes:
@@ -90,8 +90,8 @@ Commands (case-insensitive):
 | `status` | Nothing; reports the state | `ok v=… state=… mode=… pad=… padlive=… freelook=… look=… batt=… chg=… ctrl=…` |
 | `mode hotas` / `mode normal` / `mode toggle` | Switch mode | status line |
 | `pad x360` / `pad ds4` / `pad toggle` | Switch the virtual pad type (needs a connected controller) | status line, or `err no controller` |
-| `freelook on` / `freelook off` / `freelook toggle` / `freelook head` | Free look on, off, or [head tracking](HEAD_TRACKING.md), for this session (not saved to the ini) | status line |
-| `input` | Live controller sample, plus head tracking | `ok lx= ly= rx= ry= lt= rt= btn= ps= hs= hx= hy=` |
+| `freelook on` / `freelook off` / `freelook toggle` / `freelook head` | `on` is normal free look, and `head` is [head tracking](HEAD_TRACKING.md). `toggle` switches between normal and off, and from head it goes to off. Not saved by itself, but a later settings change such as `+`, `-`, `F` or `C` saves it | status line |
+| `input` | Live controller sample, plus head tracking | `ok lx= ly= rx= ry= lt= rt= btn= ps= hs= hx= hy=`, or `err no controller` |
 | `quit` | Close the relay cleanly, exactly like closing its window | `ok quitting` |
 
 Status fields:
@@ -105,11 +105,11 @@ Status fields:
 | `padlive` | `1` if the virtual pad is live |
 | `freelook` | `on` / `off` / `head` |
 | `look` | `idle`, `looking` (RB held), `locked` (camera locked with R3) |
-| `batt` | controller battery in %, or `-` if unknown / wired |
+| `batt` | controller battery in %; `empty`, `low`, `medium` or `full` for controllers that only report a level; `wired`; or `-` if unknown |
 | `chg` | `1` while charging |
 | `ctrl` | controller name. Always the **last** field and runs to the end of the line, since names can contain spaces |
 
-`input` fields: `lx ly rx ry` are the sticks (-32768..32767), `lt rt` the triggers (0..255), `btn` the XInput button bits, `ps` the PlayStation button (0/1). The relay refreshes this sample about 15 times a second, so polling faster gains nothing. Polling `status` several times a second is fine.
+`input` fields: `lx ly rx ry` are the sticks (-32768..32767), `lt rt` the triggers (0..255), `btn` the XInput button bits, `ps` the PlayStation button (0/1). `hs` is head status: 0 off, 1 no tracker, 2 tracking, 3 paused, 4 RB: stick, 5 locked. `hx hy` are where the head points, -100..100, with positive being right and down on the HEAD box. Ignore them when `hs` is 0 or 1. The relay refreshes this sample about 15 times a second, so polling faster gains nothing. Polling `status` several times a second is fine.
 
 Pad and free-look changes are applied a moment after the reply (between controller reads), so the status line in that reply may still show the old value. Send `status` again to see the change.
 
@@ -119,7 +119,7 @@ Errors: `err unknown command`, `err no controller`, and similar. Treat any line 
 
 # Discord button in Normal (Xbox) mode
 
-New in v1.2.0. **Optional and off by default.** Set `discord_button=` in the ini.
+Added in v1.2.0. **Optional and off by default.** Set `discord_button=` in the ini.
 
 ## What it's for
 

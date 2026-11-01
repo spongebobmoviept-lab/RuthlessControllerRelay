@@ -9,7 +9,7 @@
    e.g.     RelayControl.exe mode toggle
             RelayControl.exe status
    Commands: status | mode hotas|normal|toggle | pad x360|ds4|toggle |
-             freelook on|off|toggle | input | quit
+             freelook on|off|head|toggle | input | quit
    Exit code: 0 = the relay answered "ok ...", 1 = it answered "err ...",
               2 = relay not running / control_pipe not on / no answer,
               3 = bad usage.
@@ -47,7 +47,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdLine, int show) {
     }
     if (!cmd[0]) {
         out("Usage: RelayControl.exe <command>   e.g. RelayControl.exe mode toggle\n"
-            "Commands: status | mode hotas|normal|toggle | pad x360|ds4|toggle | freelook on|off|toggle | input | quit\n");
+            "Commands: status | mode hotas|normal|toggle | pad x360|ds4|toggle | freelook on|off|head|toggle | input | quit\n");
         return 3;
     }
     strcat(cmd, "\n");

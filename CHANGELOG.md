@@ -1,9 +1,23 @@
 # Changelog
 
+## v1.3.1 — 2026-11-01
+
+**Everyone on an older version should update.** If you update from v1.3.0 with `U`, get the [full zip](../../releases/latest) once for head tracking, because the updater only replaces the programs.
+
+### Fixed
+- **Hiding the real controller on a fresh PC.** The relay only looked for HidHide's command-line tool in Program Files, where only HidHide's own full installer puts it. On a PC that got HidHide from the relay, the tool wasn't found, so the real controller could stay visible to games. It now uses the copy in the zip's `drivers\hidhide` folder when Program Files has none.
+- **The SAFE build** no longer shows the `F`, `H` and `C` keys or the HEAD box, which it doesn't have, and a saved `freelook=head` no longer turns free look off in it.
+- **A one-time cursor jump.** If focus moved to another program while you held `RB` in head tracking, letting go could move the desktop cursor once.
+
+### Changed
+- **Head tracking needs no install.** The zip now has a trimmed copy of opentrack in an `opentrack` folder instead of its full installer: unmodified files, with only the webcam tracker, the Accela filter and the UDP output. It runs in opentrack's portable mode, so its settings stay in that folder and nothing goes in the registry or your Documents. Delete the folder and it's gone. The zip drops from about 190 MB to about 47 MB.
+- **The startup and waiting screens** say whether head tracking is ready.
+- **The home page and cheat sheet are rewritten,** with a table of what's different in each version. The zip now includes `LICENSE.txt` and `THIRD_PARTY_LICENSES.md`.
+
 ## v1.3.0 — 2026-11-01
 
 ### Added
-- **[Head tracking](docs/HEAD_TRACKING.md) (optional, off until you turn it on).** Turn your head and the camera follows, using any webcam. Press `H` in the relay window to set it up: it offers to install opentrack, lets you pick your camera and game, and sets everything else up itself. Press `H` again any time to change either. The relay starts and stops opentrack on its own, so the webcam is only on while head tracking is.
+- **[Head tracking](docs/HEAD_TRACKING.md) (optional, off until you turn it on).** Turn your head and the camera follows, using any webcam. Press `H` in the relay window to set it up: it offers to install opentrack, lets you pick your camera and game, and sets everything else up itself. Press `H` again any time to change either. The relay runs opentrack only while free look is set to head.
   - **Anti-cheat notice:** it sends your head movement to the game as software mouse movement, constantly. No bans are known, but use it at your own risk.
   - It only moves the mouse in HOTAS mode, while the game you picked is focused, your cursor is over it, and the game has hidden the cursor. So your desktop, other programs and in-game menus are left alone.
   - Tap `RB` to recenter. Hold `RB` to pause your head and steer with the stick, and let go to return to where your head has it. `RB` + `R3` freezes the camera.
@@ -19,6 +33,9 @@
 
 ### Unchanged
 - With head tracking off, the path from your controller to the game is exactly as before. The virtual joystick is the same, so your game bindings keep working.
+
+### Build
+- Now also links `oleaut32`, `ws2_32` and `winhttp`. See [Building from source](README.md#building-from-source).
 
 ## v1.2.0 — 2026-10-05
 

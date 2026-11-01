@@ -1,0 +1,130 @@
+<!doctype html>
+<!-- Source of Controller_Compatibility_Cheat_Sheet.pdf. To update it: edit this, then
+     chrome --headless=new --no-pdf-header-footer --print-to-pdf=Controller_Compatibility_Cheat_Sheet.pdf Controller_Compatibility_Cheat_Sheet.html -->
+<html lang="en"><head><meta charset="utf-8"><title>Ruthless Controller Relay — What Works Cheat Sheet</title>
+<style>
+@page { size: letter; margin: 0.55in 0.55in; }
+body { font: 10pt/1.45 "Segoe UI", "Noto Sans", Arial, sans-serif; color: #222; margin: 0; }
+h1 { font-size: 20pt; color: #1a3550; margin: 0 0 2pt; }
+.sub { color: #666; margin: 0 0 12pt; }
+h2 { font-size: 12pt; color: #1a3550; border-bottom: 2.5px solid #1a3550; padding-bottom: 2pt; margin: 14pt 0 8pt; break-after: avoid; }
+table { width: 100%; border-collapse: collapse; margin: 0 0 6pt; break-inside: avoid; }
+th { background: #1a3550; color: #fff; text-align: left; padding: 7pt 7pt; font-weight: 700; }
+td { padding: 6pt 7pt; border-bottom: 1px solid #d5d8dc; background: #f4f5f7; vertical-align: top; }
+tr.bad td { background: #fdeaea; } tr.good td { background: #e9f7ee; }
+.ok { color: #1a8a3e; font-weight: 700; } .no { color: #c0332b; font-weight: 700; } .na { color: #999; }
+.note { color: #666; font-size: 9pt; margin: 0 0 6pt; }
+.box { padding: 9pt 12pt; border-radius: 3px; margin: 0 0 8pt; break-inside: avoid; }
+.blue { background: #e9f0fc; border-left: 4px solid #2c6fcf; } .blue b { color: #174a94; }
+.red { background: #fdeaea; border-left: 4px solid #c0332b; } .red b { color: #b02a22; }
+.amber { background: #fff6e2; border-left: 4px solid #e0a020; } .amber b { color: #8a5e00; }
+.cols { display: flex; gap: 12pt; break-inside: avoid; margin-bottom: 8pt; }
+.col { flex: 1; padding: 8pt 11pt; border-radius: 4px; }
+.g { background: #e9f7ee; border: 1px solid #b4e0c4; } .r { background: #fdeaea; border: 1px solid #f2bcb8; }
+.col h3 { font-size: 10pt; margin: 0 0 4pt; } .g h3 { color: #1a8a3e; } .r h3 { color: #c0332b; }
+.col ul { margin: 0 0 4pt; padding-left: 14pt; } .col li { margin-bottom: 4pt; } .fix { color: #666; font-style: italic; }
+kbd { font: 700 8.5pt Consolas, monospace; border: 1px solid #a8b0ba; border-bottom-width: 2px; border-radius: 3px; padding: 1pt 5pt; background: #f8f9fa; }
+.badge { display: inline-block; border: 2px solid; border-radius: 6px; padding: 3pt 12pt; font: 700 9pt Consolas, monospace; margin-right: 8pt; }
+footer { color: #666; font-size: 8.5pt; border-top: 1px solid #ccc; padding-top: 5pt; margin-top: 10pt; }
+</style></head><body>
+
+<h1>Ruthless Controller Relay — What Works Cheat Sheet</h1>
+<p class="sub">Plain-English guide: which controllers work, how well, and why. No tech knowledge needed. For version 1.3.1.</p>
+
+<h2>The short version</h2>
+<div class="box blue"><b>Best experience: a USB cable for PlayStation controllers, a wireless dongle for Xbox controllers.</b> That way everything works: moving, buttons, vibration, and light color. Bluetooth works great for moving and buttons on every controller, but PlayStation controllers (DualSense / DualShock 4) lose vibration and light color over Bluetooth — see why below. This is not something wrong with your setup, it's true for everyone, everywhere.</div>
+
+<h2>Compatibility matrix</h2>
+<table>
+<tr><th style="width:15%">Controller</th><th style="width:21%">How it's connected</th><th style="width:12%">Movement &amp; Buttons</th><th style="width:11%">Vibration (Rumble)</th><th style="width:9%">Light Color</th><th>Notes</th></tr>
+<tr><td>PS5 Controller (DualSense)</td><td><b>USB Cable</b></td><td class="ok">Works</td><td class="ok">Works</td><td class="ok">Works</td><td>Everything works. Recommended.</td></tr>
+<tr><td>PS5 Controller (DualSense)</td><td><b>Bluetooth (wireless)</b></td><td class="ok">Works</td><td class="no">Doesn't work</td><td class="no">Doesn't work</td><td>Plug in a cable if you want rumble/light.</td></tr>
+<tr><td>PS4 Controller (DualShock 4)</td><td><b>USB Cable</b></td><td class="ok">Works</td><td class="ok">Works</td><td class="ok">Works</td><td>Everything works. Recommended.</td></tr>
+<tr><td>PS4 Controller (DualShock 4)</td><td><b>Bluetooth (wireless)</b></td><td class="ok">Works</td><td class="no">Doesn't work</td><td class="no">Doesn't work</td><td>Plug in a cable if you want rumble/light.</td></tr>
+<tr class="bad"><td>Xbox Controller</td><td><b>USB Cable</b></td><td class="ok">Works</td><td class="ok">Works</td><td class="na">n/a *</td><td>Fine for normal play. <span class="no">HOTAS mode does NOT reliably work this way</span> (V / M unreliable too) — see warning below (†).</td></tr>
+<tr class="good"><td>Xbox Controller</td><td><b>Wireless Dongle (official Xbox Wireless Adapter, or the controller's own)</b></td><td class="ok">Works</td><td class="ok">Works</td><td class="na">n/a *</td><td>Fully works, HOTAS/V/M included. Recommended over a cable for this controller specifically.</td></tr>
+<tr><td>HOTAS / Flight Stick / Throttle</td><td><b>USB Cable</b></td><td class="ok">Works</td><td class="na">n/a *</td><td class="na">n/a *</td><td>These don't have vibration motors or a color light in real life, so there's nothing to turn on.</td></tr>
+</table>
+<p class="note">* n/a = that controller doesn't physically have this feature, so it's not a bug or limitation of the software.</p>
+
+<div class="box red"><b>⚠ † HOTAS mode does NOT reliably work with a wired Xbox controller</b><br>
+HOTAS mode is the main reason this program exists — and a wired Xbox controller is the one case where it can't be trusted. Windows connects a wired Xbox controller through a special driver that this software (or anything else) has no ability to hide from other apps, unlike every other controller in this list. That means the game can still notice the real controller and use normal gamepad controls instead of reading the joystick axes this program is feeding it through HOTAS mode — the mode may look like it's working on this screen while the game itself ignores it. The same underlying problem also makes <b>V</b> (disguise as PlayStation) and <b>M</b> (button remap) unreliable for this controller.<br><br>
+<b>Fix: connect that Xbox controller through a wireless dongle instead of a cable</b> (the official Xbox Wireless Adapter, or the controller's own 2.4GHz dongle if it has one) — same controller, same buttons, just a different plug — and HOTAS mode, V, and M all work exactly as expected.</div>
+
+<h2>Why doesn't PlayStation Bluetooth rumble/light work?</h2>
+<div class="box amber"><b>It's not broken — nobody has cracked this.</b> When a PS4/PS5 controller connects over a USB cable, it accepts vibration and light-color commands using a simple, well-understood method. Over Bluetooth, Sony uses a different, much stricter method that basically no software outside of an actual PlayStation console has ever gotten working reliably — including big well-known controller tools that have been trying for years. We tested it thoroughly (including trying a second, different Bluetooth adapter) and confirmed the same result every serious attempt online has run into. Moving and pressing buttons over Bluetooth is completely unaffected — only vibration and the light color are impacted.</div>
+
+<h2>Two versions are included — which one do I run?</h2>
+<table>
+<tr><th style="width:34%">Version</th><th style="width:34%">What it does</th><th>When to use it</th></tr>
+<tr><td><b>RuthlessControllerRelay.exe</b></td><td>Full version — vibration, light color, and every optional feature.</td><td>Use this one first. This is the normal, recommended version.</td></tr>
+<tr><td><b>RuthlessControllerRelay_SAFE.exe</b></td><td>Stripped-down version — no vibration, light color, battery reading, head tracking, update check or Stream Deck control. Just clean, reliable button/stick input.</td><td>Only use this as a backup if the full version ever acts strange on your PC. It's a simpler fallback with fewer moving parts.</td></tr>
+</table>
+
+<h2>Controls — what the keys do</h2>
+<table>
+<tr><th style="width:27%">Key</th><th>What it does</th></tr>
+<tr><td><kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>H</kbd><br><span class="note">or the controller button shown on the dashboard</span></td><td>Switch between <b>Normal mode</b> (game sees your controller normally) and <b>HOTAS mode</b> (game sees a joystick). Do this once at the start — this is the main control. It works from anywhere.</td></tr>
+<tr><td><kbd>V</kbd></td><td>Flip the OUTPUT badge between PlayStation-style and Xbox-style — use this if a specific game only recognizes one type.</td></tr>
+<tr><td><kbd>R</kbd></td><td>Change which key or controller-button-combo does the Normal/HOTAS switch above.</td></tr>
+<tr><td><kbd>M</kbd></td><td>Remap a button — make one button act like a different one.</td></tr>
+<tr><td><kbd>G</kbd></td><td>Pick which game this launches, or launch it directly next time.</td></tr>
+<tr><td><kbd>F</kbd></td><td>Free look: off, normal, or head tracking.</td></tr>
+<tr><td><kbd>H</kbd></td><td>Set up head tracking, or change its camera or game.</td></tr>
+<tr><td><kbd>+</kbd> / <kbd>-</kbd></td><td>Free look or head tracking speed. Saved automatically.</td></tr>
+<tr><td><kbd>U</kbd></td><td>Install an update, when the title line says a new version is out. It asks first.</td></tr>
+<tr><td><kbd>C</kbd></td><td>Turn the automatic update check on or off.</td></tr>
+</table>
+<p class="note">Type these keys into the black program window itself (click it first so it's the active window), not into your game.</p>
+
+<h2>Looking around in HOTAS mode</h2>
+<table>
+<tr><th style="width:27%">On the controller</th><th>What it does</th></tr>
+<tr><td>Hold <b>RB</b> (<b>R1</b> on PlayStation)</td><td>Free look: the right stick's left/right turns the camera. Let go and it snaps back.</td></tr>
+<tr><td><b>RB</b> + click <b>R3</b></td><td>Lock the camera where it is. Tap RB or click R3 to unlock.</td></tr>
+<tr><td>Tap <b>RB</b> (head tracking on)</td><td>Recenter. Look straight ahead first.</td></tr>
+<tr><td>Hold <b>RB</b> (head tracking on)</td><td>Your head pauses and the stick has the camera, so you can look behind you. Let go to return to your head.</td></tr>
+</table>
+<p class="note">For the camera to snap back or recenter, bind your game's free look reset, if it has one, to RB's joystick button: button 6, which some games show as button 5.</p>
+
+<h2>Head tracking in one minute</h2>
+<div class="box blue"><b>Press H in the program window, pick your webcam, pick your game.</b> That's the setup, and there's nothing to install. Then start the game, switch to HOTAS mode and turn your head. The dot in the HEAD box shows where you're pointing. It only works in the game you picked, and only in games where Left Alt + mouse is free look. To use it in another game, press H again, then G.</div>
+<div class="box red"><b>Anti-cheat notice.</b> Head tracking sends your head movement to the game as mouse movement from software, constantly, while it's on. Some anti-cheat studies how players use the mouse and keyboard, and could treat that as suspicious. No bans are known, but nobody can promise that. Use it at your own risk.</div>
+<table>
+<tr><th style="width:27%">HEAD box says</th><th>Meaning</th></tr>
+<tr><td><b>OFF</b></td><td>Head tracking is off, or you're in Normal mode. Switch to HOTAS mode. If the dashboard doesn't say "free look HEAD", press F.</td></tr>
+<tr><td><b>NO TRACKER</b></td><td>Nothing is arriving from the tracker. Normal until your game is running. If it's running, check that the opentrack folder is next to the program, then press H and pick your camera again.</td></tr>
+<tr><td><b>TRACKING</b></td><td>Your head is moving the camera.</td></tr>
+<tr><td><b>PAUSED</b></td><td>The game you picked doesn't have the mouse: you're in a menu, in another program, or on another monitor. It comes back by itself.</td></tr>
+<tr><td><b>RB: STICK</b></td><td>You're holding RB, so the stick has the camera.</td></tr>
+<tr><td><b>LOCKED</b></td><td>The camera is frozen with RB + R3.</td></tr>
+</table>
+
+<h2 style="break-before: page">Reading the screen: right vs. wrong</h2>
+<p>The top banner and the two INPUT/OUTPUT boxes are the whole story — glance at those first any time something feels off.</p>
+<div class="cols">
+<div class="col g"><h3>✓ Everything's fine</h3><ul>
+<li>Banner reads <b>NORMAL MODE</b> or <b>HOTAS</b> — colored <b>teal</b>, <b>purple</b>, or <b>green</b> (never orange or red)</li>
+<li><b>Controller:</b> line names your actual controller (e.g. "PlayStation 5 controller (DualSense)")</li>
+<li>Both INPUT and OUTPUT boxes show a real type — <b>PS</b>, <b>XBOX</b>, or <b>HOTAS</b> (never blank dashes)</li>
+<li>Sticks/bars/buttons on screen move the instant you touch the real controller</li></ul>
+This is your green light — safe to start the game.</div>
+<div class="col r"><h3>✗ Something's wrong</h3><ul>
+<li><b>"NOT READY — waiting for a controller..."</b> (orange/red banner)<br><span class="fix">Fix: turn the controller on / plug it in. It's picked up automatically — no restart needed. Don't start your game until this clears.</span></li>
+<li><b>"MODE UNKNOWN — press Ctrl+Alt+H once to set it"</b> (red banner)<br><span class="fix">Fix: press Ctrl+Alt+H once to choose Normal or HOTAS mode.</span></li>
+<li>OUTPUT box shows <b>"----"</b><br><span class="fix">Fix: no virtual controller made yet — set the mode (above) first; check the log file if it still doesn't clear.</span></li>
+<li>"This window is too short to show the dashboard..."<br><span class="fix">Fix: maximize/enlarge the window, or shrink the font — it fixes itself automatically once there's room.</span></li>
+<li>The <b>Battery</b> line turns <b>red</b><br><span class="fix">Fix: the battery is low. Charge the controller.</span></li></ul></div>
+</div>
+<p>Two more live indicators worth knowing:</p>
+<p><span class="badge" style="color:#1a70d0">| PS |</span><span class="badge" style="color:#16b04a">| XBOX |</span></p>
+<ul>
+<li>The <b>face buttons light up their real-life color</b> when pressed (PlayStation Triangle/Square/Cross/Circle or Xbox Y/X/A/B) — unpressed buttons stay plain gray. If a button never lights up, that specific button isn't registering.</li>
+<li><b>Banner color meanings in full:</b> teal = Normal mode, output matches your real controller type (PS→PS or Xbox→Xbox); purple = Normal mode but output is set to the other type on purpose (e.g. real PS controller showing up as Xbox — this is fine if you did it with V); green = HOTAS mode; yellow = free look, you're looking around; magenta = free look, camera locked; orange/red = mode not chosen yet or no controller found, see the table above.</li>
+</ul>
+
+<h2>Something not working?</h2>
+<div class="box blue">Every run writes a plain-text log file next to the program (<b>driver_install_log.txt</b>). If anything looks wrong, that file has the details — send it along if you're asking for help troubleshooting. There's also an <b>Uninstall.bat</b> included that cleanly removes everything the program installed, if you ever want to fully undo it. Head tracking installs nothing: it lives in the opentrack folder beside the program, so deleting that folder removes it.</div>
+
+<footer>Ruthless Controller Relay — compatibility cheat sheet — for v1.3.1 — updated 2026-11-01</footer>
+</body></html>

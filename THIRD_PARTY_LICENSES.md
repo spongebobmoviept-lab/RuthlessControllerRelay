@@ -1,6 +1,6 @@
 # Third-party licenses and credit
 
-This project would not exist without four pieces of driver/library engineering built and maintained by other people. All four are verified as of 2026-09 to carry permissive licenses that explicitly allow redistribution, including in binary form, provided the copyright notice and license text travel with them. That's exactly what this file is for. If you redistribute this project, keep this file (or at minimum, the four notices below) intact.
+This project would not exist without five pieces of engineering built and maintained by other people: vJoy, HidHide, ViGEmBus, ViGEmClient and opentrack. The first four were verified as of 2026-09 to carry permissive licenses that explicitly allow redistribution, including in binary form, provided the copyright notice and license text travel with them. That's exactly what this file is for. If you redistribute this project, keep this file (or at minimum, the notices below) intact.
 
 This project is genuinely a small addition on top of the real work below — a thin layer of input relaying and UI glued on top of driver-level engineering that took each of these authors far more effort than anything in this repository. Please give them the credit.
 
@@ -12,7 +12,7 @@ This project is genuinely a small addition on top of the real work below — a t
 **Authors:** Stanislaw Halik and contributors
 **License:** ISC for almost all of its code, per its own README, with a few dependencies under their own terms. Full details: [OPENTRACK-LICENSING.txt](https://github.com/opentrack/opentrack/blob/master/OPENTRACK-LICENSING.txt) and its `3rdparty-notices` folder.
 
-opentrack reads the webcam and works out where your head is pointing. The release zip includes its **official, unmodified installer** (`opentrack-2026.1.0-win32-setup.exe`) for convenience. This project contains none of its source code and only talks to it over its documented UDP output. The installer comes straight from [opentrack's releases](https://github.com/opentrack/opentrack/releases/tag/opentrack-2026.1.0), which also has the source.
+opentrack reads the webcam and works out where your head is pointing. That part is its NeuralNet tracker, by Michael Welter (same ISC license), which runs on [ONNX Runtime](https://github.com/microsoft/onnxruntime) (MIT). opentrack also uses [OpenCV](https://github.com/opencv/opencv) and [Qt](https://www.qt.io/) under their own licenses. The release zip includes a **trimmed copy** in its `opentrack` folder: unmodified files from the official 2026.1.0 installer, keeping only the webcam tracker, the Accela filter, the UDP output and what those need. That leaves out the optional parts of the installer that carry their own terms. The notices for what is included, and opentrack's warranty terms, are in that folder's `doc`. This project contains none of opentrack's source code. It writes opentrack's settings in that folder, starts and stops it, and reads its documented UDP output. The full installer and the source are at [opentrack's releases](https://github.com/opentrack/opentrack/releases/tag/opentrack-2026.1.0).
 
 ```
 Copyright (c) 2012-2016 Stanislaw Halik
@@ -165,4 +165,13 @@ Two parts of this project's own code were only made correct by reading real, wor
 - **The Linux kernel's [`hid-playstation.c`](https://github.com/torvalds/linux/blob/master/drivers/hid/hid-playstation.c)** driver — an independent, cross-checked source for the same DualSense output-report field layout.
 - **[psdevwiki.com](https://www.psdevwiki.com/ps4/DS4-BT)**'s community-maintained DS4 Bluetooth protocol documentation — the source for the Feature Report 0x05 "wake up the full report" step this project's Bluetooth DS4 support depends on.
 
+- **[Xidi](https://github.com/samuelgr/Xidi)** and its contributors' tests — how the Guide button can be read through the undocumented `XInputGetStateEx`, and why the Share button can't.
+
 No code from any of the above was copied into this project — they were used purely as reference material to confirm real hardware behavior instead of guessing at it, consistent with this project's own "get real confirmed data, don't guess a protocol" rule (see [docs/DEVELOPMENT_JOURNEY.md](docs/DEVELOPMENT_JOURNEY.md)).
+
+---
+
+## Used, but not included
+
+- **[zig](https://ziglang.org/)** (MIT) builds the relay from source. No part of it is in the download.
+- **[Vencord](https://github.com/Vendicated/Vencord)** (GPL-3.0) is only for the optional plugin in `extras/vencord-bridge/`. Vencord isn't included and the relay doesn't use it. The plugin builds into Vencord, so it's GPL-3.0-or-later.

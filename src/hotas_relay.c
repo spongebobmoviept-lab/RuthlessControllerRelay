@@ -43,7 +43,7 @@
  *   zig rc hotas_relay.rc   (-> hotas_relay_manifest.res, manifest + icon)
  *   zig cc -target x86_64-windows-gnu -O2 -Wall -Wextra -I vigem_client -o RuthlessControllerRelay.exe ^
  *       hotas_relay.c hotas_relay_manifest.res ^
- *       -ldinput8 -ldxguid -lole32 -loleaut32 -lcomdlg32 -ladvapi32 -lshell32 -lsetupapi -lnewdev -lhid -lcfgmgr32 -lws2_32
+ *       -ldinput8 -ldxguid -lole32 -loleaut32 -lcomdlg32 -ladvapi32 -lshell32 -lsetupapi -lnewdev -lhid -lcfgmgr32 -lws2_32 -lwinhttp
  *   (same again with -DSAFE_MODE_NO_EXTRAS -o RuthlessControllerRelay_SAFE.exe for the fallback build)
  *
  * (hotas_relay_manifest.res embeds hotas_relay.manifest, which requests
@@ -96,7 +96,6 @@
 #include <commdlg.h>
 #include <sddl.h> /* ConvertStringSecurityDescriptorToSecurityDescriptorA, for the control pipe */
 #include <tlhelp32.h> /* head_process_running() */
-#include <shlobj.h>   /* SHGetFolderPathA, for opentrack's profile folder */
 #include <strmif.h>   /* head_list_cameras() */
 #include <winhttp.h>  /* the update check */
 
@@ -106,11 +105,13 @@
    whether they still had the old build (see CHANGELOG.md). Bump this with
    every GitHub release. */
 #ifndef RELAY_VERSION /* a test can pretend to be an older version */
-#define RELAY_VERSION "1.3.0"
-#define RELAY_VERSION_W L"1.3.0"
+#define RELAY_VERSION "1.3.1"
+#define RELAY_VERSION_W L"1.3.1"
 #endif
 
-#define HIDHIDE_CLI "\"C:\\Program Files\\Nefarius Software Solutions\\HidHide\\x64\\HidHideCLI.exe\""
+#ifndef HIDHIDE_CLI_INSTALLED /* a test can pretend HidHide's full installer never ran */
+#define HIDHIDE_CLI_INSTALLED "C:\\Program Files\\Nefarius Software Solutions\\HidHide\\x64\\HidHideCLI.exe"
+#endif
 #define TOGGLE_HOTKEY_ID 1
 #define HOTKEY_CONFIG_FILE "ruthless_controller_relay.ini"
 
@@ -674,9 +675,27 @@ static int g_vjoy_acquired = 0;
    thread that could contend on it does. */
 static CRITICAL_SECTION g_output_lock;
 
+/* HidHide's command-line tool, quoted. Its full installer puts one in Program Files, so
+   that one wins if it's there. But the relay only installs HidHide's driver, so on a
+   fresh PC the copy that comes in the zip is the only one, and without it nothing gets
+   hidden. */
+static const char *hidhide_cli(void) {
+    static char quoted[MAX_PATH + 3];
+    if (!quoted[0]) {
+        char path[MAX_PATH] = HIDHIDE_CLI_INSTALLED;
+        if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES) {
+            GetModuleFileNameA(NULL, path, sizeof(path));
+            char *slash = strrchr(path, '\\');
+            if (slash) snprintf(slash + 1, sizeof(path) - (size_t)(slash + 1 - path), "drivers\\hidhide\\HidHideCLI.exe");
+        }
+        snprintf(quoted, sizeof(quoted), "\"%s\"", path);
+    }
+    return quoted;
+}
+
 static int run_hidhide(const char *args) {
-    char cmd[1024]; /* wide enough for HIDHIDE_CLI + a chained --dev-hide "<path>" --app-reg "<MAX_PATH exe path>" */
-    snprintf(cmd, sizeof(cmd), "%s %s", HIDHIDE_CLI, args);
+    char cmd[1024]; /* wide enough for the tool + a chained --dev-hide "<path>" --app-reg "<MAX_PATH exe path>" */
+    snprintf(cmd, sizeof(cmd), "%s %s", hidhide_cli(), args);
     STARTUPINFOA si = { .cb = sizeof(si) };
     PROCESS_INFORMATION pi;
     if (!CreateProcessA(NULL, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) return -1;
@@ -694,7 +713,7 @@ static int run_hidhide(const char *args) {
    plugged in. */
 static size_t run_hidhide_capture(const char *args, char *out, size_t out_size) {
     char cmd[600];
-    snprintf(cmd, sizeof(cmd), "%s %s", HIDHIDE_CLI, args);
+    snprintf(cmd, sizeof(cmd), "%s %s", hidhide_cli(), args);
 
     HANDLE readPipe, writePipe;
     SECURITY_ATTRIBUTES sa = { sizeof(sa), NULL, TRUE };
@@ -1141,7 +1160,9 @@ static volatile LONG g_head_last_tick = 0;          /* GetTickCount() of the las
 static volatile LONG g_head_seen = 0;               /* 1 once any pose has arrived */
 static volatile LONG g_head_gate_open = 0;          /* mouse output: poses arriving, HOTAS mode, game focused with the cursor over it */
 static volatile LONG g_head_stick_sent = 0;         /* head mode: mouse counts the stick has added during this RB hold, undone on letting go */
+#ifndef SAFE_MODE_NO_EXTRAS
 static volatile LONG g_head_view_x = 0, g_head_view_y = 0; /* where the head points from straight ahead, -100..100, for the dashboard and Stream Deck */
+#endif
 static volatile LONG g_head_recenter = 0;           /* RB tapped: the next pose becomes straight ahead, for the head box */
 static volatile LONG g_update_check = 1;            /* update_check= / the C key: look for a newer release once per launch */
 static volatile LONG g_update_ready = 0;            /* 1 once g_update_tag holds a newer release */
@@ -1913,7 +1934,9 @@ static void load_config(UINT *mods_out, UINT *vk_out, DWORD *button_mask_out, DW
                 InterlockedExchange(&g_freelook_enabled, 0);
             else
                 InterlockedExchange(&g_freelook_enabled, 1);
+#ifndef SAFE_MODE_NO_EXTRAS
             InterlockedExchange(&g_head_mode, !strncmp(v, "head", 4));
+#endif
         } else if (!strncmp(p, "head_speed=", 11)) {
             long s = atol(p + 11);
             if (s >= 1 && s <= 2000) InterlockedExchange(&g_head_speed, s);
@@ -2186,6 +2209,7 @@ static int console_visible_rows(void) {
     return info.srWindow.Bottom - info.srWindow.Top + 1;
 }
 
+#ifndef SAFE_MODE_NO_EXTRAS
 /* What head tracking is doing right now. Also sent to the Stream Deck as hs=. */
 typedef enum { HEAD_ST_OFF = 0, HEAD_ST_NO_TRACKER, HEAD_ST_TRACKING, HEAD_ST_PAUSED, HEAD_ST_STICK, HEAD_ST_LOCKED } head_status_t;
 
@@ -2232,6 +2256,7 @@ static void draw_head_box_row(int row) {
     set_color(st == HEAD_ST_OFF ? CLR_GRAY_DIM : CLR_CYAN);
     printf("|");
 }
+#endif
 
 static void draw_axis_bar(const char *label, int value, int min, int max, int headRow) {
     enum { WIDTH = 21 };
@@ -2250,7 +2275,11 @@ static void draw_axis_bar(const char *label, int value, int min, int max, int he
     printf("] ");
     set_color(CLR_WHITE_BR);
     printf("%6d", value);
+#ifndef SAFE_MODE_NO_EXTRAS
     draw_head_box_row(headRow);
+#else
+    (void)headRow;
+#endif
     printf("\n");
 }
 
@@ -2328,6 +2357,10 @@ static const char *describe_controller(backend_t backend) {
 /* Shown in a loop before any controller is found, and again if one
    disconnects mid-session -- makes it obvious the software is alive and
    just waiting, and exactly what to do about it. */
+#ifndef SAFE_MODE_NO_EXTRAS
+static int head_find_opentrack(char *path, size_t len);
+#endif
+
 static void render_waiting_screen(UINT rid, int was_ever_connected) {
     clear_console();
 
@@ -2351,6 +2384,13 @@ static void render_waiting_screen(UINT rid, int was_ever_connected) {
     set_color(CLR_GRAY_DIM);
     printf("\nOnce connected, press R to change the toggle hotkey/button, or G to\n");
     printf("pick/launch your game.\n");
+#ifndef SAFE_MODE_NO_EXTRAS
+    {
+        char ot[MAX_PATH];
+        printf(head_find_opentrack(ot, sizeof(ot)) ? "\nHead tracking is ready, with nothing to install. Press H once connected.\n"
+                                                   : "\nHead tracking won't work: the opentrack folder is missing. It's in the full download.\n");
+    }
+#endif
 }
 
 /* Total lines the full dashboard below actually prints (counted, not
@@ -2551,8 +2591,10 @@ static void render_dashboard(const XINPUT_GAMEPAD *gp, double updates_per_sec, U
     printf("Press R to change the hotkey/button above live. Press M to fix/remap   \n");
     printf("any vJoy button (see the grid below).                                 \n");
     printf("Press G to %-58s\n", g_game_path[0] ? "launch your game." : "pick your game's exe (then launch it).");
+#ifndef SAFE_MODE_NO_EXTRAS
     printf("F: free look %-6s  H: head tracking setup  C: update check %-3s       \n",
            g_head_mode ? "HEAD" : g_freelook_enabled ? "NORMAL" : "OFF", g_update_check ? "on" : "off");
+#endif
     printf("Updates/sec: %6.1f                                          \n\n", updates_per_sec);
     set_color(CLR_NORMAL);
 
@@ -5605,15 +5647,11 @@ static int head_profile_with_camera(const char *existing, const char *camera, ch
     return n > 0 && (size_t)n < len;
 }
 
-/* opentrack's game list: exe <0x1f> profile, entries split by 0x1e. Adds this game and
-   keeps the others; a game already listed is left as it is. Returns 0 if it wouldn't fit. */
-static int head_detector_list(const char *existing, const char *exe, const char *profile, char *out, size_t len) {
-    char key[MAX_PATH + 2];
-    snprintf(key, sizeof(key), "%s\x1f", exe);
-    int n;
-    if (strstr(existing, key)) n = snprintf(out, len, "%s", existing);
-    else if (existing[0]) n = snprintf(out, len, "%s\x1e%s\x1f%s", existing, exe, profile);
-    else n = snprintf(out, len, "%s\x1f%s", exe, profile);
+/* The game list line in opentrack's globals.ini: exe, 0x1f, profile, written the way Qt
+   escapes it. One game, the exe set in the relay. Returns 0 if it wouldn't fit.
+   ponytail: exe names are ANSI here and Qt reads UTF-8, so a non-English exe name won't match; convert if that comes up. */
+static int head_game_list(const char *exe, const char *profile, char *out, size_t len) {
+    int n = snprintf(out, len, "\"%s\\x1f%s\"", exe, profile);
     return n > 0 && (size_t)n < len;
 }
 
@@ -5640,6 +5678,7 @@ static void freelook_let_go(ULONGLONG *resetUntil, ULONGLONG now) {
         freelook_recenter(resetUntil, now);
         return;
     }
+    if (!g_head_gate_open) return; /* focus moved away during the hold: that move would land on the desktop */
     INPUT in;
     memset(&in, 0, sizeof(in));
     in.type = INPUT_MOUSE;
@@ -5649,7 +5688,7 @@ static void freelook_let_go(ULONGLONG *resetUntil, ULONGLONG now) {
 }
 
 #ifndef SAFE_MODE_NO_EXTRAS /* SAFE builds have no head tracking */
-#ifndef HEAD_UDP_PORT /* probes\head_udp_test.c uses its own, so it can run beside a live relay */
+#ifndef HEAD_UDP_PORT /* a test can use its own, so it can run beside a live relay */
 #define HEAD_UDP_PORT 4242
 #endif
 #define HEAD_GAP_MS 250 /* no pose for this long: start fresh on the next one instead of jumping */
@@ -5716,14 +5755,50 @@ static int head_process_running(const char *exe) {
     return found;
 }
 
-/* Where opentrack's own installer puts it. */
+/* The relay's own trimmed copy of opentrack, in a folder beside it: just the webcam
+   tracker, and nothing gets installed. portable.txt in that folder makes opentrack keep
+   all its settings there too, so deleting the folder leaves nothing behind. */
 static int head_find_opentrack(char *path, size_t len) {
-    static const char *const places[] = {"%ProgramFiles(x86)%\\opentrack\\opentrack.exe", "%ProgramFiles%\\opentrack\\opentrack.exe"};
-    for (size_t i = 0; i < sizeof(places) / sizeof(places[0]); i++) {
-        DWORD n = ExpandEnvironmentStringsA(places[i], path, (DWORD)len);
-        if (n > 0 && n <= len && GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES) return 1;
+    char dir[MAX_PATH];
+    get_exe_dir(dir, sizeof(dir));
+    int n = snprintf(path, len, "%sopentrack\\opentrack.exe", dir);
+    return n > 0 && (size_t)n < len && GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
+}
+
+/* Has H written its settings? Until then opentrack would open its full window. */
+static int head_is_set_up(void) {
+    char dir[MAX_PATH], path[MAX_PATH + 32];
+    get_exe_dir(dir, sizeof(dir));
+    snprintf(path, sizeof(path), "%sopentrack\\globals.ini", dir);
+    return GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
+}
+
+static HANDLE g_head_tracker_job = NULL; /* closes opentrack with the relay, however the relay ends */
+static int g_head_tracker_ours = 0;      /* 1 if the relay started the running copy */
+
+static BOOL CALLBACK head_close_window(HWND w, LPARAM pid) {
+    DWORD owner = 0;
+    GetWindowThreadProcessId(w, &owner);
+    if (owner == (DWORD)pid) PostMessageA(w, WM_CLOSE, 0, 0);
+    return TRUE;
+}
+
+/* Asks the copy the relay started to close itself, so it lets go of the camera and its
+   tray icon properly. It only exits once all its windows are closed, hidden ones
+   included. If it hasn't gone after 2 s, the job ends it. */
+static void head_tracker_close(void) {
+    if (!g_head_tracker_ours) return;
+    g_head_tracker_ours = 0;
+    PROCESSENTRY32 pe;
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap != INVALID_HANDLE_VALUE) {
+        pe.dwSize = sizeof(pe);
+        for (BOOL more = Process32First(snap, &pe); more; more = Process32Next(snap, &pe))
+            if (!_stricmp(pe.szExeFile, "opentrack.exe")) EnumWindows(head_close_window, (LPARAM)pe.th32ProcessID);
+        CloseHandle(snap);
     }
-    return 0;
+    for (int i = 0; i < 40 && head_process_running("opentrack.exe"); i++) Sleep(50);
+    if (g_head_tracker_job) TerminateJobObject(g_head_tracker_job, 0);
 }
 
 /* Runs opentrack only while head mode is on, so the webcam is off otherwise, and brings
@@ -5733,22 +5808,19 @@ static int head_find_opentrack(char *path, size_t len) {
    and prints debug text, which would land on the dashboard. Children stay in the job. */
 static void head_tracker_keep(DWORD now) {
     static DWORD lastCheck = 0, lastStart = 0;
-    static HANDLE job = NULL;
-    static int ours = 0;
     if (now - lastCheck < 2000) return;
     lastCheck = now;
     int running = head_process_running("opentrack.exe");
     if (!g_head_mode) {
-        if (ours && running && job) TerminateJobObject(job, 0);
-        ours = 0;
+        head_tracker_close();
         return;
     }
     if (running) return;
-    ours = 0;
+    g_head_tracker_ours = 0;
     if (lastStart && now - lastStart < 10000) return; /* a slow start or a crash isn't restarted over itself */
 
     char exe[MAX_PATH], dir[MAX_PATH], shell[MAX_PATH], cmd[MAX_PATH * 3];
-    if (!head_find_opentrack(exe, sizeof(exe))) return; /* the head box stays on NO TRACKER; H sets it up */
+    if (!head_find_opentrack(exe, sizeof(exe)) || !head_is_set_up()) return; /* the head box stays on NO TRACKER; H sets it up */
     if (!ExpandEnvironmentStringsA("%SystemRoot%\\System32\\cmd.exe", shell, sizeof(shell))) return;
     strncpy(dir, exe, sizeof(dir) - 1);
     dir[sizeof(dir) - 1] = '\0';
@@ -5758,22 +5830,22 @@ static void head_tracker_keep(DWORD now) {
     STARTUPINFOA si = {.cb = sizeof(si)};
     PROCESS_INFORMATION pi;
     lastStart = now ? now : 1;
-    if (!job) {
+    if (!g_head_tracker_job) {
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION lim;
         memset(&lim, 0, sizeof(lim));
         lim.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        job = CreateJobObjectA(NULL, NULL);
-        if (job) SetInformationJobObject(job, JobObjectExtendedLimitInformation, &lim, sizeof(lim));
+        g_head_tracker_job = CreateJobObjectA(NULL, NULL);
+        if (g_head_tracker_job) SetInformationJobObject(g_head_tracker_job, JobObjectExtendedLimitInformation, &lim, sizeof(lim));
     }
     if (!CreateProcessA(shell, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW | CREATE_SUSPENDED, NULL, dir, &si, &pi)) {
         log_line("head tracking: couldn't start opentrack (error %lu)", GetLastError());
         return;
     }
-    if (job) AssignProcessToJobObject(job, pi.hProcess);
+    if (g_head_tracker_job) AssignProcessToJobObject(g_head_tracker_job, pi.hProcess);
     ResumeThread(pi.hThread);
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
-    ours = 1;
+    g_head_tracker_ours = 1;
     log_line("head tracking: started opentrack");
 }
 
@@ -5846,8 +5918,10 @@ static DWORD WINAPI head_udp_thread(LPVOID arg) {
             heldY += dy;
             dx = dy = 0;
         } else {
-            dx += heldX;
-            dy += heldY;
+            if (gate) { /* not if focus moved away during the hold: it would land on the desktop */
+                dx += heldX;
+                dy += heldY;
+            }
             heldX = heldY = 0;
         }
         if (dx || dy) {
@@ -5917,46 +5991,6 @@ static char head_setup_wait_key(void) {
     }
 }
 
-/* Runs the opentrack installer that ships next to the relay. Returns 1 once opentrack is there. */
-static int head_setup_install_opentrack(void) {
-    char pattern[MAX_PATH], setup[MAX_PATH], found[MAX_PATH];
-    if (head_find_opentrack(found, sizeof(found))) return 1;
-    GetModuleFileNameA(NULL, pattern, sizeof(pattern));
-    char *slash = strrchr(pattern, '\\');
-    if (slash) slash[1] = '\0';
-    strncpy(setup, pattern, sizeof(setup) - 1);
-    setup[sizeof(setup) - 1] = '\0';
-    size_t dirLen = strlen(setup);
-    strncat(pattern, "opentrack-*-setup.exe", sizeof(pattern) - strlen(pattern) - 1);
-    WIN32_FIND_DATAA fd;
-    HANDLE f = FindFirstFileA(pattern, &fd);
-    if (f == INVALID_HANDLE_VALUE) {
-        printf("opentrack isn't installed, and its installer isn't next to the relay.\n");
-        printf("Get it from https://github.com/opentrack/opentrack/releases\n\n");
-        return 0;
-    }
-    FindClose(f);
-    strncat(setup, fd.cFileName, sizeof(setup) - dirLen - 1);
-    printf("opentrack isn't installed yet. It reads your webcam for the relay.\n");
-    printf("Press Y to install it now, any other key to cancel.\n\n");
-    if (head_setup_wait_key() != 'Y') return 0;
-    printf("Installing...\n");
-    SHELLEXECUTEINFOA sei;
-    memset(&sei, 0, sizeof(sei));
-    sei.cbSize = sizeof(sei);
-    sei.fMask = SEE_MASK_NOCLOSEPROCESS;
-    sei.lpFile = setup;
-    sei.lpParameters = "/SILENT /SUPPRESSMSGBOXES /NORESTART";
-    sei.nShow = SW_SHOWNORMAL;
-    if (ShellExecuteExA(&sei) && sei.hProcess) {
-        WaitForSingleObject(sei.hProcess, INFINITE);
-        CloseHandle(sei.hProcess);
-    }
-    if (head_find_opentrack(found, sizeof(found))) return 1;
-    printf("That didn't finish. You can run %s yourself and press H again.\n\n", fd.cFileName);
-    return 0;
-}
-
 /* H on the dashboard: everything head tracking needs, right here in the relay window. */
 static void run_head_setup_flow(void) {
     static char cameras[16][128];
@@ -5980,7 +6014,12 @@ static void run_head_setup_flow(void) {
         check_console_keypress(); /* keys pressed while waiting aren't answers to what comes next */
     }
 
-    if (!head_setup_install_opentrack()) goto cancel;
+    char found[MAX_PATH];
+    if (!head_find_opentrack(found, sizeof(found))) {
+        printf("The opentrack folder isn't next to the relay. It's in the full download:\n");
+        printf("github.com/spongebobmoviept-lab/RuthlessControllerRelay/releases/latest\n\n");
+        goto cancel;
+    }
 
     int n = head_list_cameras(cameras, 9);
     if (n == 0) {
@@ -6009,15 +6048,13 @@ static void run_head_setup_flow(void) {
 
     /* opentrack's profile: keeps anything already tuned in its window */
     static const char profileName[] = "relay-head.ini";
-    char dir[MAX_PATH], path[MAX_PATH + 32];
+    char otDir[MAX_PATH], path[MAX_PATH + 32], list[MAX_PATH + 32];
     static char oldText[8192], newText[8192];
-    if (SHGetFolderPathA(NULL, CSIDL_PERSONAL, NULL, 0, dir) != S_OK) {
-        printf("Couldn't find your Documents folder.\n\n");
-        goto cancel;
-    }
-    snprintf(path, sizeof(path), "%s\\opentrack-2.3", dir);
+    get_exe_dir(otDir, sizeof(otDir));
+    strncat(otDir, "opentrack", sizeof(otDir) - strlen(otDir) - 1);
+    snprintf(path, sizeof(path), "%s\\ini", otDir);
     CreateDirectoryA(path, NULL);
-    snprintf(path, sizeof(path), "%s\\opentrack-2.3\\%s", dir, profileName);
+    snprintf(path, sizeof(path), "%s\\ini\\%s", otDir, profileName);
     oldText[0] = '\0';
     FILE *fp = fopen(path, "rb");
     if (fp) {
@@ -6032,15 +6069,12 @@ static void run_head_setup_flow(void) {
     fputs(newText, fp);
     fclose(fp);
 
-    /* opentrack's game list, so it starts tracking when the game runs: it has no other way to autostart */
-    static const char regKey[] = "Software\\opentrack-2.3\\OrganizationDefaults";
-    static char oldList[4096], newList[4096];
-    DWORD size = sizeof(oldList);
-    if (RegGetValueA(HKEY_CURRENT_USER, regKey, "executable-list", RRF_RT_REG_SZ, NULL, oldList, &size) != ERROR_SUCCESS) oldList[0] = '\0';
-    if (!head_detector_list(oldList, exe, profileName, newList, sizeof(newList)) ||
-        RegSetKeyValueA(HKEY_CURRENT_USER, regKey, "executable-list", REG_SZ, newList, (DWORD)strlen(newList) + 1) != ERROR_SUCCESS ||
-        RegSetKeyValueA(HKEY_CURRENT_USER, regKey, "executable-detector-enabled", REG_SZ, "true", 5) != ERROR_SUCCESS ||
-        RegSetKeyValueA(HKEY_CURRENT_USER, regKey, "settings-filename", REG_SZ, profileName, sizeof(profileName)) != ERROR_SUCCESS) {
+    /* That profile, and start tracking when the game runs: opentrack has no other way to autostart */
+    snprintf(path, sizeof(path), "%s\\globals.ini", otDir);
+    if (!head_game_list(exe, profileName, list, sizeof(list)) ||
+        !WritePrivateProfileStringA("General", "executable-list", list, path) ||
+        !WritePrivateProfileStringA("General", "executable-detector-enabled", "true", path) ||
+        !WritePrivateProfileStringA("General", "settings-filename", profileName, path)) {
         printf("Couldn't save opentrack's settings.\n\n");
         goto cancel;
     }
@@ -6276,6 +6310,9 @@ static void update_start_thread(void) {
    finish before forcing termination, plenty for one HidHideCLI call. */
 static BOOL WINAPI console_ctrl_handler(DWORD ctrl_type) {
     (void)ctrl_type;
+#ifndef SAFE_MODE_NO_EXTRAS
+    head_tracker_close();
+#endif
     freelook_release_alt(); /* never leave Left Alt held down system-wide -- see FREELOOK_USE_MOUSE */
     relinquish_vjoy_if_acquired();
     run_hidhide("--cloak-off");
@@ -6309,6 +6346,9 @@ static void fatal_exit(const char *message) {
        "was anything actually done" state), so it's safe to call
        unconditionally even this early, before vJoy/ViGEm/HidHide are
        necessarily set up at all. */
+#ifndef SAFE_MODE_NO_EXTRAS
+    head_tracker_close();
+#endif
     freelook_release_alt();
     relinquish_vjoy_if_acquired();
     run_hidhide("--cloak-off");
@@ -7476,7 +7516,8 @@ static int run_uninstall(void) {
     printf("This removes the driver packages and services this relay installed:\n");
     printf("  - vJoy (virtual joystick)\n");
     printf("  - HIDHide (hides the real controller from games)\n");
-    printf("  - ViGEmBus (virtual Xbox/DS4 gamepad emulation)\n\n");
+    printf("  - ViGEmBus (virtual Xbox/DS4 gamepad emulation)\n");
+    printf("\n");
     printf("It does NOT delete this exe, ruthless_controller_relay.ini, or this folder -- only\n");
     printf("the system-wide drivers/services. Windows will ask you to approve\n");
     printf("this ONE time (a single UAC prompt covers everything below).\n\n");
@@ -7781,7 +7822,7 @@ static void ipc_queue_want(volatile LONG *want, LONG current, int toggle, LONG a
 }
 
 /* One status line, e.g.
-   ok v=1.2.0 state=connected mode=hotas pad=x360 padlive=1 freelook=on look=idle batt=80 chg=0 ctrl=GameSir ...
+   ok v=1.3.1 state=connected mode=hotas pad=x360 padlive=1 freelook=on look=idle batt=80 chg=0 ctrl=GameSir ...
    ctrl= is always last and runs to the end of the line (names have spaces). */
 static void ipc_status_line(char *out, size_t len, const char *prefix) {
     LONG st = g_relay_state, mode = g_hidden_mode, fls = g_freelook_state;
@@ -8340,7 +8381,7 @@ int main(int argc, char **argv) {
 
         printf("== head tracking setup ==\n");
         {
-            char out[2048], list[256];
+            char out[2048], list[64];
             CHECK(head_profile_with_camera(NULL, "My Cam", out, sizeof(out)) && strstr(out, "[neuralnet-tracker]\ncamera-name=My Cam\n") && strstr(out, "protocol-dll=udp"), "default profile gets the camera");
             CHECK(head_profile_with_camera("[tracker-pt]\ncamera-name=Other\n\n[neuralnet-tracker]\ncamera-name=Old\nnum-threads=4\n\n[udp-proto]\nport=4242\n", "New", out, sizeof(out)) &&
                   strstr(out, "[tracker-pt]\ncamera-name=Other\n") && strstr(out, "[neuralnet-tracker]\ncamera-name=New\nnum-threads=4\n") && !strstr(out, "Old"), "only the tracker's camera changes, tuning kept");
@@ -8348,9 +8389,8 @@ int main(int argc, char **argv) {
                   strstr(out, "[neuralnet-tracker]\ncamera-name=New\nnum-threads=4\n") && strstr(out, "camera-name=Nope"), "no camera line yet: added in the right section");
             CHECK(head_profile_with_camera("[modules]\ntracker-dll=pt\n", "New", out, sizeof(out)) && strstr(out, "camera-name=New"), "profile without the section: default used");
             CHECK(!head_profile_with_camera(NULL, "My Cam", out, 16), "too small is refused");
-            CHECK(head_detector_list("", "game.exe", "p.ini", list, sizeof(list)) && !strcmp(list, "game.exe\x1fp.ini"), "first game");
-            CHECK(head_detector_list("a.exe\x1fq.ini", "game.exe", "p.ini", list, sizeof(list)) && !strcmp(list, "a.exe\x1fq.ini\x1egame.exe\x1fp.ini"), "keeps other games");
-            CHECK(head_detector_list("game.exe\x1fq.ini", "game.exe", "p.ini", list, sizeof(list)) && !strcmp(list, "game.exe\x1fq.ini"), "game already listed stays");
+            CHECK(head_game_list("game.exe", "p.ini", list, sizeof(list)) && !strcmp(list, "\"game.exe\\x1fp.ini\""), "game list line");
+            CHECK(!head_game_list("game.exe", "p.ini", list, 8), "too long is refused");
         }
         {
         }
@@ -8425,6 +8465,13 @@ int main(int argc, char **argv) {
 
     check_pending_reboot();
     check_and_install_drivers();
+#ifndef SAFE_MODE_NO_EXTRAS
+    {
+        char ot[MAX_PATH];
+        printf(head_find_opentrack(ot, sizeof(ot)) ? "Head tracking: ready, nothing to install. H sets it up, F turns it on or off.\n\n"
+                                                   : "Head tracking: the opentrack folder is missing. It's in the full download.\n\n");
+    }
+#endif
 
     /* vJoy's device is session-scoped now, not persistent -- created
        fresh here on every launch, fully removed on every exit (clean or

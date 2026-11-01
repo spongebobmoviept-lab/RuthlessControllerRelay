@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Ruthless Controller Relay 2.0 mock-up</title>
+<title>Ruthless Controller Relay 2.0 sneak peek</title>
 <style>
 /* Same token numbers as the two reference apps. See UI_DESIGN.md section 2. */
 :root{
@@ -417,7 +417,7 @@ const ICONS={
 function ic(n,s=16,sw=1.15){return `<svg class="ic" width="${s}" height="${s}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round">${ICONS[n]}</svg>`}
 
 /* ---------- Data the real app reads from the relay's globals; here it's a little simulator ---------- */
-const ACCENTS={gold:{n:'Gold (this PC)',d0:'#CB830A',d1:'#A96D09',l4:'#603E05'},blue:{n:'Blue (Windows default)',d0:'#99EBFF',d1:'#60CDFF',l4:'#005FB8'},green:{n:'Green',d0:'#8FE388',d1:'#5CC85A',l4:'#107C10'},pink:{n:'Pink',d0:'#FF9BC7',d1:'#F06BA8',l4:'#B4006A'}};
+const ACCENTS={gold:{n:'Gold',d0:'#CB830A',d1:'#A96D09',l4:'#603E05'},blue:{n:'Blue (Windows default)',d0:'#99EBFF',d1:'#60CDFF',l4:'#005FB8'},green:{n:'Green',d0:'#8FE388',d1:'#5CC85A',l4:'#107C10'},pink:{n:'Pink',d0:'#FF9BC7',d1:'#F06BA8',l4:'#B4006A'}};
 const PADS={
   dualsense:{name:'DualSense',conn:'USB',ps:true,batt:'pct',full:'PlayStation 5 controller (DualSense), wired, raw HID',caps:'Rumble, lightbar and battery all work.'},
   dualsensebt:{name:'DualSense',conn:'Bluetooth',ps:true,batt:'none',why:"PlayStation pads don't report battery over Bluetooth here.",full:'PlayStation 5 controller (DualSense) over Bluetooth, raw HID',caps:"Rumble and lightbar work. Battery isn't reported."},
@@ -1051,7 +1051,7 @@ function setScene(n){
 function buildCtl(){
   const g=(t,k,opts,cur)=>`<h2>${t}</h2><div class="cs">${opts.map(([v,n])=>`<button class="cb" data-c="${k}" data-v="${v}">${n}</button>`).join('')}</div>`;
   $('#ctl').innerHTML=`<div id="ctlt" data-c="ctlmin"><h1>Mock-up controls</h1><span>${ic('x',10)}</span></div>
-  <p>Not part of the app. The app has no theme or accent picker: it follows Windows.</p>
+  <p><b>Sneak peek of 2.0.</b> A clickable mock-up: the pad and head movement are fake, and the real app is being built. Everything here works, so click around.</p><p>This panel isn't part of the app. The app has no theme or accent picker: it follows Windows.</p>
   ${GROUPS.map(([t,ks])=>`<h2>${t}</h2><div class="cs">${ks.map(k=>`<button class="cb" data-c="scene" data-v="${k}">${SCENES[k].l}</button>`).join('')}</div>`).join('')}
   ${g('Windows mode','theme',[['dark','Dark'],['light','Light']])}
   ${g('Windows accent','accent',Object.entries(ACCENTS).map(([k,a])=>[k,a.n]))}

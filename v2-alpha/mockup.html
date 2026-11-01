@@ -1,0 +1,1225 @@
+<!doctype html>
+<html lang="en" data-theme="dark" data-focus="front">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ruthless Controller Relay 2.0 mock-up</title>
+<style>
+/* Same token numbers as the two reference apps. See UI_DESIGN.md section 2. */
+:root{
+  --font:"Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,"Helvetica Neue",Arial,sans-serif;
+  --font-d:"Segoe UI Variable Display","Segoe UI",system-ui,-apple-system,"Helvetica Neue",Arial,sans-serif;
+  --mono:"Cascadia Mono",Consolas,"Courier New",monospace;
+  --acc:#A96D09;--acc-thin:#CB830A;
+}
+[data-theme=dark]{
+  color-scheme:dark;
+  --os:rgba(44,43,42,.62);--tint:rgba(32,32,32,.6);--flat:#202020;--paper:#2C2C2C;
+  --border:rgba(255,255,255,.28);--subtle:rgba(255,255,255,.09);--fill:rgba(255,255,255,.06);--hover:rgba(255,255,255,.09);
+  --text:#fff;--text2:rgba(255,255,255,.784);--dim:rgba(255,255,255,.46);--onacc:#000;--thumb:#CFCFCF;
+  --ring:rgba(255,255,255,.35);--cross:rgba(255,255,255,.18);--btnoff:rgba(255,255,255,.09);--core:#fff;--press:#17171A;
+  --ok:#6CCB5F;--warn:#FCE100;--warnfill:#FCE100;--warnon:#000;--crit:#FF99A4;--critfill:#C42B1C;--criton:#fff;--lock:#B69CFF;--lockfill:#7A4FE0;--lockon:#fff;
+  --menu:#2C2C2C;--bar:rgba(28,28,30,.82);--ctl:rgba(18,18,20,.76);
+  --wall:#0b0e16;--p1:#2d6fc0;--p2:#8d3fb0;--p3:#d86a2c;--p4:#12908c;
+}
+[data-theme=light]{
+  color-scheme:light;
+  --os:rgba(238,238,238,.62);--tint:rgba(243,243,243,.6);--flat:#F3F3F3;--paper:#F9F9F9;
+  --border:rgba(0,0,0,.32);--subtle:rgba(0,0,0,.09);--fill:rgba(255,255,255,.7);--hover:rgba(249,249,249,.5);
+  --text:rgba(0,0,0,.894);--text2:rgba(0,0,0,.608);--dim:rgba(0,0,0,.42);--onacc:#fff;--thumb:#5D5D5D;
+  --ring:rgba(0,0,0,.35);--cross:rgba(0,0,0,.18);--btnoff:rgba(0,0,0,.06);--core:#fff;--press:#fff;
+  --ok:#0F7B0F;--warn:#9D5D00;--warnfill:#9D5D00;--warnon:#fff;--crit:#C42B1C;--critfill:#C42B1C;--criton:#fff;--lock:#6B3FD4;--lockfill:#6B3FD4;--lockon:#fff;
+  --menu:#F9F9F9;--bar:rgba(238,240,244,.82);--ctl:rgba(250,250,252,.8);
+  --wall:#dfe8f4;--p1:#7fb2ee;--p2:#d7a3ea;--p3:#ffc39b;--p4:#8fe0d6;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;overflow:hidden}
+body{font:14px/1.4 var(--font);color:var(--text);background:var(--wall);user-select:none;-webkit-font-smoothing:antialiased}
+button{font:inherit;color:inherit}
+svg.ic{display:block;flex:none}
+[hidden]{display:none!important}
+
+/* Mock desktop */
+#wall{position:fixed;inset:0;background:var(--wall)}
+#wall svg{width:100%;height:100%;display:block}
+
+/* The window. --os stands in for what DWM's own acrylic adds, --tint is the app's own tint. */
+.win{position:absolute;border-radius:8px;overflow:hidden;background:var(--tint);
+  -webkit-backdrop-filter:blur(44px) saturate(1.25);backdrop-filter:blur(44px) saturate(1.25);
+  box-shadow:0 0 0 1px rgba(0,0,0,.34),inset 0 0 0 1px rgba(255,255,255,.07),0 26px 60px rgba(0,0,0,.42),0 4px 16px rgba(0,0,0,.26)}
+.win::before{content:"";position:absolute;inset:0;background:var(--os);pointer-events:none}
+.win::after{content:"";position:absolute;inset:0;pointer-events:none;opacity:.05;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
+[data-focus=behind] .win{background:var(--flat);-webkit-backdrop-filter:none;backdrop-filter:none}
+[data-focus=behind] .win::before,[data-focus=behind] .win::after{display:none}
+.win.maxed{border-radius:0}
+
+/* Caption */
+.cap{position:absolute;left:0;right:0;top:0;height:32px;display:flex;align-items:center;font-size:12px;z-index:3;cursor:default}
+.cap .hx{width:16px;height:16px;margin:0 8px 0 12px;flex:none}
+.cap .ttl{white-space:nowrap;color:var(--text)}
+[data-focus=behind] .cap .ttl,[data-focus=behind] .capb{color:var(--text2)}
+.tabs{display:flex;margin-left:14px;height:32px}
+.tab{position:relative;padding:0 10px;height:32px;background:none;border:0;color:var(--text2);font-size:12px;cursor:pointer;transition:color .15s}
+.tab:hover{color:var(--text)}
+.tab.sel{color:var(--text);font-weight:600}
+.tab.sel::after{content:"";position:absolute;left:10px;right:10px;bottom:3px;height:2px;border-radius:2px;background:var(--acc)}
+.capgap{flex:1;min-width:6px}
+.chip-up{height:22px;padding:0 10px;margin-right:8px;background:var(--acc);color:var(--onacc);border:0;border-radius:4px;font-size:12px;cursor:pointer;white-space:nowrap}
+.chip-up:hover{filter:brightness(.92)}
+.capb{width:46px;height:32px;border:0;background:none;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:background-color .1s}
+.capb:hover{background:var(--hover)}
+.capb.x:hover{background:#C42B1C;color:#fff}
+
+/* One table of rectangles times one scale, as in the spec */
+#wrap{position:absolute;left:0;right:0;bottom:0;top:32px;z-index:1}
+#scene{position:absolute;left:0;top:0;width:760px;height:488px;transform-origin:0 0}
+.grip{position:absolute;right:0;bottom:0;width:16px;height:16px;cursor:nwse-resize;z-index:4}
+
+/* Status boxes: framed, radius 8, subtle outline, no fill at rest */
+.box{position:absolute;top:4px;height:100px;border:1px solid var(--subtle);border-radius:8px;padding:7px 12px 7px 14px;cursor:pointer;overflow:hidden;transition:background-color .15s}
+.box:hover{background:var(--fill)}
+.blabel{font-size:max(12px,calc(11px/var(--s,1)));font-weight:600;line-height:16px;color:var(--text2);white-space:nowrap}
+.bword{font:600 40px/44px var(--font-d);letter-spacing:-.3px;white-space:nowrap}
+.bsub{font-size:max(14px,calc(11px/var(--s,1)));line-height:20px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bslot{position:absolute;right:8px;top:6px;display:flex;align-items:center;gap:6px;height:24px}
+.mbar{position:absolute;left:0;top:0;bottom:0;width:6px;background:var(--subtle)}
+#bMode{padding-left:18px}
+.w-ok{color:var(--ok)}.w-warn{color:var(--warn)}.w-dim{color:var(--dim)}.w-lock{color:var(--lock)}
+.box.f-warn{background:var(--warnfill);color:var(--warnon);border-color:transparent}
+.box.f-crit{background:var(--critfill);color:var(--criton);border-color:transparent}
+.box.f-lock{background:var(--lockfill);color:var(--lockon);border-color:transparent}
+.box.f-warn .blabel,.box.f-warn .bsub,.box.f-crit .blabel,.box.f-crit .bsub,.box.f-lock .blabel,.box.f-lock .bsub{color:inherit;opacity:.9}
+.box.f-warn .chip,.box.f-crit .chip,.box.f-lock .chip,.box.f-warn .more,.box.f-crit .more{color:inherit;border-color:currentColor;background:none}
+.box.l-warn{border-color:var(--warn)}.box.l-crit{border-color:var(--crit)}
+.box.flash{animation:fl .5s ease-in-out 3}
+@keyframes fl{50%{opacity:.35}}
+@media (prefers-reduced-motion:reduce){.box.flash{animation:none}}
+#scene.takeover #bLook{display:none}
+#scene.takeover #bLink{left:252px!important;width:496px!important}
+.chip{display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border:1px solid var(--subtle);border-radius:4px;background:var(--fill);font-size:11px;color:var(--text2);white-space:nowrap}
+.chip.warn{color:var(--warn);border-color:var(--warn)}
+.more{height:20px;padding:0 6px;border:1px solid var(--subtle);border-radius:4px;font-size:11px;line-height:18px}
+.batt{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text);font-variant-numeric:tabular-nums;white-space:nowrap}
+.batt.dimb{color:var(--dim)}
+.batt.crit{color:var(--crit)}
+
+/* Controls */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:32px;padding:0 11px;background:var(--fill);border:1px solid var(--subtle);border-radius:4px;cursor:pointer;white-space:nowrap;transition:background-color .15s}
+.btn:hover{background:var(--hover)}
+.btn:active{background:var(--fill)}
+.btn.acc{background:var(--acc);color:var(--onacc);border-color:transparent}
+.btn.acc:hover{filter:brightness(.92)}
+.btn.sm{height:24px;padding:0 8px;font-size:12px}
+.btn[disabled]{opacity:.5;cursor:default}
+.box .btn.sm{height:24px}
+.box.f-warn .btn,.box.f-crit .btn{background:rgba(0,0,0,.14);border-color:currentColor;color:inherit}
+.ibtn{width:32px;height:32px;display:flex;align-items:center;justify-content:center;background:none;border:0;border-radius:4px;cursor:pointer;transition:background-color .15s}
+.ibtn:hover{background:var(--hover)}
+.tgl{position:relative;width:40px;height:20px;flex:none;border-radius:10px;border:1px solid var(--border);background:none;padding:0;cursor:pointer}
+.tgl i{position:absolute;left:3px;top:3px;width:12px;height:12px;border-radius:50%;background:var(--thumb);transition:transform .15s cubic-bezier(.33,1,.68,1),width .08s,height .08s}
+.tgl:hover i{left:2px;top:2px;width:14px;height:14px}
+.tgl.on{background:var(--acc);border-color:transparent}
+.tgl.on i{background:var(--onacc);transform:translateX(20px)}
+.seg{display:flex;width:100%}
+.seg button{flex:1;height:30px;padding:0 6px;background:var(--fill);border:1px solid var(--subtle);margin-left:-1px;cursor:pointer;font-size:13px;white-space:nowrap}
+.seg button:first-child{margin-left:0;border-radius:4px 0 0 4px}
+.seg button:last-child{border-radius:0 4px 4px 0}
+.seg button:hover{background:var(--hover)}
+.seg button.sel{background:var(--acc);color:var(--onacc);border-color:transparent}
+.sl{display:flex;align-items:center;gap:10px}
+.sl input{flex:1;min-width:0;-webkit-appearance:none;appearance:none;height:20px;background:none;margin:0;cursor:pointer}
+.sl input::-webkit-slider-runnable-track{height:4px;border-radius:2px;background:linear-gradient(to right,var(--acc) var(--p),var(--border) var(--p))}
+.sl input::-moz-range-track{height:4px;border-radius:2px;background:linear-gradient(to right,var(--acc) var(--p),var(--border) var(--p))}
+.sl input::-webkit-slider-thumb{-webkit-appearance:none;width:20px;height:20px;margin-top:-8px;border-radius:50%;background:radial-gradient(circle,var(--acc) 0 6px,var(--paper) 6.5px);box-shadow:0 0 0 1px var(--subtle),0 1px 3px rgba(0,0,0,.3)}
+.sl input::-moz-range-thumb{width:20px;height:20px;border:0;border-radius:50%;background:radial-gradient(circle,var(--acc) 0 6px,var(--paper) 6.5px);box-shadow:0 0 0 1px var(--subtle)}
+.sl input:hover::-webkit-slider-thumb{background:radial-gradient(circle,var(--acc) 0 7px,var(--paper) 7.5px)}
+.slv{min-width:46px;text-align:right;font-size:12px;color:var(--text2);font-variant-numeric:tabular-nums}
+.step{display:flex;gap:4px}
+.step .btn{width:28px;height:24px;padding:0}
+
+/* Instruments sit straight on the glass: no cards */
+.ring{position:absolute;overflow:visible;cursor:default;pointer-events:none}
+.ring .hit{fill:transparent;pointer-events:all}
+.ring .r{fill:none;stroke:var(--ring);stroke-width:1.5}
+.ring .c{stroke:var(--cross);stroke-width:1}
+.ring.dash .r{stroke-dasharray:5 7}
+.ring.dash .c,.ring.flag .c{display:none}
+.ring.thick .r{stroke:var(--acc-thin);stroke-width:3}
+.ring .d,.ring .tr circle{fill:var(--dot,var(--acc-thin))}
+.ring .k{fill:var(--core)}
+.ring.hollow .d{fill:none;stroke:var(--warn);stroke-width:3}
+.ring.hollow .k{display:none}
+.ring.dimd .d{opacity:.5}
+.ring.dimd .k{opacity:.55}
+.ring .f{fill:var(--text2);font:600 14px var(--font);text-anchor:middle}
+.tp{position:absolute;top:114px;width:130px;height:28px;border-radius:14px;overflow:hidden;background:var(--btnoff);font-size:12px;font-variant-numeric:tabular-nums;color:var(--text2)}
+.tp span{position:absolute;top:0;line-height:28px}
+.tp.L .a{left:20px}.tp.L .b{right:12px}.tp.R .a{right:20px}.tp.R .b{left:12px}
+.tp .a{font-weight:600}
+.tp.clk .a{color:var(--text)}
+.tp.clk i{background:var(--text)}
+.tp.clk .fillc .a{color:inherit}
+.tp i{position:absolute;top:6px;bottom:6px;width:1px;background:var(--border)}
+.tp.L i{left:10.2%}.tp.R i{right:10.2%}
+.tp .fillc{position:absolute;inset:0;background:var(--acc);color:var(--onacc)}
+.tp.L .fillc{clip-path:inset(0 calc(100% - var(--p,0)*1%) 0 0)}
+.tp.R .fillc{clip-path:inset(0 0 0 calc(100% - var(--p,0)*1%))}
+.pb{position:absolute;display:flex;align-items:center;justify-content:center;gap:5px;background:var(--btnoff);color:var(--text2);font-size:12px;font-weight:600;transition:background-color .12s,color .12s,opacity .12s}
+.pb.on{background:var(--acc);color:var(--onacc);transition:none}
+.pb small{font-weight:400;font-size:11px;opacity:.85}
+.fb{position:absolute;width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:var(--btnoff);color:var(--fc);font-weight:700;font-size:14px;transition:background-color .12s,color .12s}
+.fb.on{background:var(--fc);color:var(--press);transition:none}
+.ro{position:absolute;top:313px;width:200px;text-align:center;font-size:12px;color:var(--text2);font-variant-numeric:tabular-nums;white-space:pre}
+.ringt{position:absolute;top:118px;width:200px;text-align:center;font-size:12px;font-weight:600;color:var(--text2)}
+.tag{position:absolute;transform:translate(-50%,-50%);font-size:11px;color:var(--text2);white-space:nowrap;pointer-events:none}
+.tag.num{color:var(--text);font-weight:600;font-variant-numeric:tabular-nums}
+.tag.rm{color:var(--acc-thin)}
+#tele.dead .pb,#tele.dead .fb,#tele.dead .tp{opacity:.5}
+#scene.editing [data-phys]{cursor:pointer}
+#scene.editing [data-phys]:hover{outline:1px solid var(--border);outline-offset:2px}
+#scene.editing svg[data-phys]:hover{outline:none}
+#scene.editing svg[data-phys]:hover .r{stroke:var(--border);stroke-width:2}
+.picked{outline:2px solid var(--acc-thin)!important;outline-offset:2px!important}
+svg.picked{outline:none!important}
+svg.picked .r{stroke:var(--acc-thin);stroke-width:3}
+
+/* Footer */
+#foot{position:absolute;left:12px;right:12px;top:444px;height:32px;display:flex;align-items:center;gap:10px}
+#hint{flex:1;min-width:0;font-size:12px;line-height:15px;color:var(--text2);text-align:center}
+#rate{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text2);font-variant-numeric:tabular-nums;min-width:52px;justify-content:flex-end}
+#tick{width:6px;height:6px;border-radius:50%;background:var(--subtle)}
+#tick.on{background:var(--text2)}
+
+/* Details tab */
+#details{position:absolute;left:12px;right:6px;top:112px;height:324px;overflow-y:auto;padding-right:6px;font-size:13px;user-select:text}
+#details::-webkit-scrollbar,.pbody::-webkit-scrollbar{width:6px}
+#details::-webkit-scrollbar-thumb,.pbody::-webkit-scrollbar-thumb{background:rgba(128,128,128,.5);border-radius:3px}
+.path{display:flex;align-items:center;gap:8px;padding:6px 2px 10px;font-size:14px;font-weight:600;flex-wrap:wrap}
+.path em{font-style:normal;color:var(--text2);font-weight:400}
+.dh{font-size:12px;font-weight:600;color:var(--text2);margin:8px 0 2px;line-height:22px}
+.dr{display:grid;grid-template-columns:18px 138px 1fr auto;gap:0 6px;align-items:center;min-height:24px;padding:1px 2px;border-bottom:1px solid var(--subtle)}
+.dr b{font-weight:400}
+.dr span{color:var(--text2)}
+.dr .mono{font-variant-numeric:tabular-nums}
+.good{color:var(--ok)}.bad{color:var(--warn)}.muted{color:var(--dim)}
+.log{font-variant-numeric:tabular-nums;color:var(--text2);line-height:20px;white-space:pre-wrap}
+.drow{display:flex;gap:8px;padding:10px 0 4px}
+.xp{background:none;border:0;padding:0;font-size:12px;font-weight:600;color:var(--text2);margin:8px 0 2px;line-height:22px;display:flex;align-items:center;gap:4px;cursor:pointer}
+.xp svg{transition:transform .15s}.xp.open svg{transform:rotate(90deg)}
+.grid18{display:grid;grid-template-columns:repeat(3,1fr);gap:0 12px;color:var(--text2);line-height:20px;font-size:12px}
+
+/* Full-window pages: welcome, install, restart, fatal */
+#card{position:absolute;inset:4px 12px 12px;display:flex;flex-direction:column}
+.cardmode .box,.cardmode #tele,.cardmode #foot,.cardmode #details{display:none!important}
+.band{border-radius:8px;padding:12px 16px;border:1px solid var(--subtle);margin-bottom:12px}
+.band .bword{white-space:normal}
+.band.f-warn{background:var(--warnfill);color:var(--warnon);border-color:transparent}
+.band.f-crit{background:var(--critfill);color:var(--criton);border-color:transparent}
+.band p{margin:2px 0 0;font-size:14px}
+.cbody{flex:1;padding:4px 8px;font-size:14px;overflow:auto}
+.cbody h2{font:600 20px/28px var(--font-d);margin:0 0 6px}
+.cbody p{margin:0 0 10px;color:var(--text2)}
+.cbody ol{margin:0 0 10px;padding-left:22px;color:var(--text)}
+.cbody li{margin:2px 0}
+.crow{display:grid;grid-template-columns:24px 96px 1fr 84px;gap:8px;align-items:center;min-height:34px;border-bottom:1px solid var(--subtle)}
+.crow span{color:var(--text2)}
+.crow .st{text-align:right;font-size:12px}
+.spin{width:14px;height:14px;border-radius:50%;border:2px solid var(--subtle);border-top-color:var(--acc-thin);animation:sp .9s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+.cfoot{display:flex;justify-content:flex-end;align-items:center;gap:8px;padding-top:10px}
+.cfoot .note{flex:1;margin:0}
+
+/* Settings popup: its own window beside the panel, opaque paper, Windows draws the corners and shadow */
+.pop{position:absolute;width:360px;background:var(--paper);border-radius:8px;box-shadow:0 0 0 1px var(--subtle),0 14px 40px rgba(0,0,0,.42),0 3px 10px rgba(0,0,0,.24);display:flex;flex-direction:column;z-index:20;animation:pin .15s ease-out}
+[data-theme=light] .pop{box-shadow:0 0 0 1px var(--subtle),0 14px 40px rgba(0,0,0,.16),0 3px 10px rgba(0,0,0,.1)}
+@keyframes pin{from{opacity:0}}
+@media (prefers-reduced-motion:reduce){.pop{animation:none}}
+.pbody{padding:12px;overflow-y:auto;max-height:100%}
+.phead{display:flex;align-items:center;gap:4px;margin:-4px -4px 8px;min-height:32px}
+.ptitle{flex:1;font-weight:600}
+.pstep{font-size:12px;color:var(--text2);margin-right:4px}
+.tiles{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.tile{display:grid;grid-template-columns:18px 1fr 12px;grid-template-rows:auto auto;gap:0 8px;align-items:center;height:58px;padding:0 8px 0 10px;background:var(--fill);border:1px solid var(--subtle);border-radius:4px;text-align:left;cursor:pointer;align-content:center;transition:background-color .15s}
+.tile:hover{background:var(--hover)}
+.tile .i{grid-row:1/3}
+.tile .t{font-size:14px;line-height:20px;white-space:nowrap}
+.tile .v{grid-column:2/4;font-size:12px;line-height:16px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tile .c{color:var(--dim);grid-row:1;grid-column:3}
+.hr{height:1px;background:var(--subtle);margin:10px 0}
+.note{font-size:12px;line-height:16px;color:var(--text2);margin:4px 0 8px}
+.note.warn{color:var(--warn)}.note.crit{color:var(--crit)}
+.prow{display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:32px}
+.plabel{font-size:14px;margin:8px 0 4px}
+.pfoot{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:8px}
+.capf{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:32px;padding:0 6px 0 11px;background:var(--fill);border:1px solid var(--subtle);border-radius:4px}
+.capf.arm{border-color:var(--acc-thin)}
+.lrow{display:flex;align-items:center;gap:10px;width:100%;min-height:32px;padding:4px 8px;background:none;border:1px solid transparent;border-radius:4px;text-align:left;cursor:pointer}
+.lrow:hover{background:var(--hover)}
+.lrow i{width:16px;height:16px;border-radius:50%;border:1px solid var(--border);flex:none}
+.lrow.sel i{border:5px solid var(--acc)}
+.bar4{height:4px;border-radius:2px;background:var(--border);overflow:hidden;margin:6px 0}
+.bar4 b{display:block;height:100%;background:var(--acc)}
+.keys{display:grid;grid-template-columns:auto 1fr;gap:3px 12px;font-size:12px;color:var(--text2);margin:4px 0 8px}
+.keys b{font-weight:600;color:var(--text);white-space:nowrap}
+code{font:12px var(--mono);background:var(--fill);border:1px solid var(--subtle);border-radius:3px;padding:0 4px;white-space:nowrap}
+.notice{border:1px solid var(--warn);border-radius:4px;padding:8px 10px;font-size:13px;line-height:18px;margin-bottom:8px}
+
+/* Mock taskbar and tray */
+#tb{position:fixed;left:0;right:0;bottom:0;height:48px;background:var(--bar);-webkit-backdrop-filter:blur(30px) saturate(1.4);backdrop-filter:blur(30px) saturate(1.4);border-top:1px solid var(--subtle);display:flex;align-items:center;z-index:30;font-size:12px}
+#tbc{flex:1;display:flex;justify-content:center;gap:4px}
+.tbb{position:relative;width:44px;height:40px;border:0;border-radius:4px;background:none;display:flex;align-items:center;justify-content:center;cursor:pointer}
+.tbb:hover{background:var(--hover)}
+.tbb.act{background:var(--fill)}
+.tbb::after{content:"";position:absolute;bottom:2px;left:50%;width:6px;height:3px;margin-left:-3px;border-radius:2px;background:var(--dim)}
+.tbb.act::after{width:16px;margin-left:-8px;background:var(--acc-thin)}
+.tbb.flash{animation:tbf 1s steps(2) 4}
+@keyframes tbf{50%{background:var(--warnfill)}}
+#tray{display:flex;align-items:center;gap:6px;padding:0 10px 0 4px}
+#trayi{position:relative;width:32px;height:40px;border:0;background:none;border-radius:4px;display:flex;align-items:center;justify-content:center;cursor:pointer}
+#trayi:hover{background:var(--hover)}
+#clock{text-align:right;line-height:15px;padding-left:6px;font-variant-numeric:tabular-nums}
+.menu{position:fixed;min-width:230px;background:var(--menu);border-radius:8px;padding:4px;box-shadow:0 0 0 1px var(--subtle),0 10px 30px rgba(0,0,0,.38);z-index:40;font-size:13px}
+.mi{position:relative;display:flex;align-items:center;gap:8px;height:30px;padding:0 10px 0 6px;border-radius:4px;cursor:pointer;white-space:nowrap}
+.mi:hover{background:var(--hover)}
+.mi.dis{color:var(--dim);cursor:default;background:none}
+.mi.bold{font-weight:600}
+.mi .mk{width:16px;display:flex;justify-content:center;flex:none}
+.mi .ar{margin-left:auto;padding-left:18px;color:var(--text2)}
+.ms{height:1px;background:var(--subtle);margin:4px 6px}
+.mi>.menu{display:none;position:absolute;right:calc(100% + 2px);bottom:-4px}
+.mi:hover>.menu{display:block}
+#balloon{position:fixed;right:14px;bottom:60px;width:300px;background:var(--paper);border-radius:8px;padding:12px 14px;box-shadow:0 0 0 1px var(--subtle),0 10px 30px rgba(0,0,0,.38);z-index:35;display:flex;gap:10px}
+#balloon b{font-weight:600;display:block}
+#balloon span{font-size:12px;color:var(--text2)}
+.hx20{width:20px;height:20px}
+
+/* Mock console */
+#con{position:absolute;background:#0C0C0C;color:#CCC;border-radius:8px;overflow:hidden;box-shadow:0 0 0 1px rgba(255,255,255,.14),0 18px 44px rgba(0,0,0,.5);z-index:15}
+#conh{height:30px;display:flex;align-items:center;padding:0 10px;background:#1b1b1b;color:#ddd;font:12px var(--font);cursor:default}
+#conh span{flex:1}
+#conb{margin:0;padding:4px 6px;width:124ch;font:12px/16px Consolas,var(--mono);white-space:pre;overflow:auto;max-height:calc(100vh - 110px);user-select:text}
+#conb .cn{color:#CCC}#conb .cw{color:#F2F2F2}#conb .cd{color:#767676}#conb .cc{color:#61D6D6}#conb .cg{color:#16C60C}#conb .cy{color:#F9F1A5}#conb .cr{color:#E74856}
+#conb .b-ho{background:#13A10E;color:#F2F2F2}#conb .b-no{background:#C19C00;color:#F2F2F2}#conb .b-un{background:#C50F1F;color:#F2F2F2}#conb .b-lo{background:#F9F1A5;color:#0C0C0C}#conb .b-lk{background:#B4009E;color:#F2F2F2}
+#conb .bp{color:#0070D1}#conb .bx{color:#10CB2E}
+
+/* Mock-up controls: not part of the app */
+#ctl{position:fixed;left:12px;top:12px;bottom:60px;width:232px;z-index:25;background:var(--ctl);-webkit-backdrop-filter:blur(20px);backdrop-filter:blur(20px);border-radius:8px;box-shadow:0 0 0 1px var(--subtle);padding:10px;overflow-y:auto;font-size:12px}
+#ctl::-webkit-scrollbar{width:6px}
+#ctl::-webkit-scrollbar-thumb{background:rgba(128,128,128,.5);border-radius:3px}
+#ctl h1{font-size:13px;font-weight:600;margin:0}
+#ctl p{margin:2px 0 8px;color:var(--text2)}
+#ctl h2{font-size:11px;font-weight:600;color:var(--text2);margin:10px 0 4px}
+.cs{display:flex;flex-wrap:wrap;gap:4px}
+.cb{height:24px;padding:0 8px;border:1px solid var(--subtle);border-radius:4px;background:var(--fill);cursor:pointer;font-size:12px;white-space:nowrap}
+.cb:hover{background:var(--hover)}
+.cb.sel{background:var(--acc);color:var(--onacc);border-color:transparent}
+#ctl.min{bottom:auto;width:auto;overflow:hidden}
+#ctl.min>*:not(#ctlt){display:none}
+#ctlt{display:flex;justify-content:space-between;align-items:center;gap:10px;cursor:pointer}
+.stat{display:flex;justify-content:space-between;color:var(--text2);line-height:18px;font-variant-numeric:tabular-nums}
+#gone{position:absolute;left:50%;top:44%;transform:translate(-50%,-50%);width:360px;background:var(--paper);border-radius:8px;padding:16px;box-shadow:0 0 0 1px var(--subtle),0 14px 40px rgba(0,0,0,.4);z-index:10}
+#gone h3{margin:0 0 4px;font-size:14px;font-weight:600}
+#gone p{margin:0 0 12px;font-size:12px;color:var(--text2)}
+
+/* Bar layout */
+.win.isbar .cap,.win.isbar #tele,.win.isbar #foot,.win.isbar #details,.win.isbar #card{display:none!important}
+.win.isbar #wrap{top:0}
+.barctl{display:none;position:absolute;right:2px;top:2px;gap:2px;z-index:5;background:var(--paper);border-radius:4px;box-shadow:0 0 0 1px var(--subtle)}
+.win.isbar:hover .barctl{display:flex}
+.barctl .ibtn{width:24px;height:24px}
+.s-small .ro,.s-small .tag,.s-small .bslot .btn{display:none}
+#tip{position:fixed;max-width:280px;background:var(--paper);color:var(--text);border-radius:4px;padding:5px 8px;font-size:12px;line-height:16px;box-shadow:0 0 0 1px var(--subtle),0 4px 14px rgba(0,0,0,.3);z-index:60;pointer-events:none}
+@media (max-width:900px){#ctl:not(.min){width:min(300px,calc(100vw - 24px))}}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <linearGradient id="gF" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f2c65c"/><stop offset=".55" stop-color="#cf9f2e"/><stop offset="1" stop-color="#a97c1f"/></linearGradient>
+  <linearGradient id="gR" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fbe29a"/><stop offset="1" stop-color="#7a5220"/></linearGradient>
+  <symbol id="hexb" viewBox="0 0 200 200">
+    <polygon points="100,6 178,50 178,150 100,194 22,150 22,50" fill="url(#gR)"/>
+    <polygon points="100,16 170,55.5 170,144.5 100,184 30,144.5 30,55.5" fill="#0b0a08"/>
+    <polygon points="100,26 162,61 162,139 100,174 38,139 38,61" fill="url(#gF)" opacity=".14"/>
+    <circle cx="100" cy="100" r="52" fill="none" stroke="url(#gR)" stroke-width="6"/>
+    <g stroke="url(#gF)" stroke-width="7" stroke-linecap="round" fill="none" opacity=".9"><path d="M46 132 60 118"/><path d="M58 144 78 124"/></g>
+    <circle cx="122" cy="78" r="26" fill="#0b0a08"/><circle cx="122" cy="78" r="26" fill="none" stroke="url(#gF)" stroke-width="4"/>
+  </symbol>
+  <symbol id="hex" viewBox="0 0 200 200"><use href="#hexb"/><circle cx="122" cy="78" r="10" fill="url(#gF)"/></symbol>
+</defs></svg>
+
+<div id="wall"><svg viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice" aria-hidden="true"><defs>
+  <linearGradient id="w1" x1="0" y1="0" x2="1" y2="1"><stop offset="0" style="stop-color:var(--p1)"/><stop offset="1" style="stop-color:var(--p2)"/></linearGradient>
+  <linearGradient id="w2" x1="0" y1="1" x2="1" y2="0"><stop offset="0" style="stop-color:var(--p3)"/><stop offset="1" style="stop-color:var(--p2)"/></linearGradient>
+  <linearGradient id="w3" x1="0" y1="0" x2="1" y2="0"><stop offset="0" style="stop-color:var(--p4)"/><stop offset="1" style="stop-color:var(--p1)"/></linearGradient>
+  <ellipse id="pet" cx="0" cy="-300" rx="118" ry="310"/></defs>
+  <g transform="translate(860 480)" opacity=".94">
+    <use href="#pet" fill="url(#w1)" transform="rotate(-150)"/><use href="#pet" fill="url(#w3)" transform="rotate(-105)"/><use href="#pet" fill="url(#w1)" transform="rotate(-60)"/>
+    <use href="#pet" fill="url(#w2)" transform="rotate(-15)"/><use href="#pet" fill="url(#w1)" transform="rotate(30)"/><use href="#pet" fill="url(#w3)" transform="rotate(75)"/>
+    <use href="#pet" fill="url(#w2)" transform="rotate(120)"/><use href="#pet" fill="url(#w1)" transform="rotate(165)"/>
+  </g></svg></div>
+
+<aside id="ctl"></aside>
+
+<div id="win" class="win">
+  <div class="cap" id="cap">
+    <svg class="hx"><use href="#hex"/></svg><span class="ttl">Ruthless Controller Relay</span>
+    <div class="tabs"><button class="tab" data-a="tab" data-v="telemetry">Telemetry</button><button class="tab" data-a="tab" data-v="details">Details</button></div>
+    <div class="capgap"></div><span id="capchip"></span>
+    <button class="capb" data-a="min" data-tip="Minimize" id="bMin"></button><button class="capb" data-a="max" data-tip="Maximize" id="bMax"></button><button class="capb x" data-a="close" data-tip="Close. The relay keeps running in the tray." id="bX"></button>
+  </div>
+  <div id="wrap"><div id="scene"></div></div>
+  <div class="barctl"><button class="ibtn" data-a="gear" data-tip="Settings" id="barG"></button><button class="ibtn" data-a="close" data-tip="Close. The relay keeps running in the tray." id="barX"></button></div>
+  <div class="grip" id="grip"></div>
+</div>
+
+<div id="pop" class="pop" hidden><div class="pbody" id="pbody"></div></div>
+<div id="con" hidden><div id="conh"><span>Ruthless Controller Relay (console)</span></div><pre id="conb"></pre></div>
+<div id="gone" hidden><h3>The relay has closed</h3><p>Your real controller is back to normal, the virtual devices are gone and the tray icon is removed.</p><button class="btn" data-a="restart">Start the relay again</button></div>
+
+<div id="tb">
+  <div style="width:150px;padding-left:12px;color:var(--text2)">Mock desktop</div>
+  <div id="tbc"><button class="tbb" id="tbw" data-a="tbw"><svg class="hx20"><use href="#hex"/></svg></button></div>
+  <div id="tray"><button id="trayi" data-a="trayclick"></button><div id="clock"></div></div>
+</div>
+<div id="menu" class="menu" hidden></div>
+<div id="balloon" hidden><svg class="hx20" style="flex:none"><use href="#hex"/></svg><div><b>Still running here</b><span>The relay keeps working in the tray. Right-click the icon for options.</span></div></div>
+<div id="tip" hidden></div>
+
+<script>
+'use strict';
+const $=(s,r=document)=>r.querySelector(s), $$=(s,r=document)=>[...r.querySelectorAll(s)];
+const clamp=(v,a,b)=>Math.min(b,Math.max(a,v));
+const esc=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+
+/* ---------- Icons ---------- */
+function gearPath(){
+  const T=8,p=2*Math.PI/T,R=6.9,r=5.1;let d='';
+  const pt=(rad,a)=>(8+rad*Math.sin(a)).toFixed(2)+' '+(8-rad*Math.cos(a)).toFixed(2);
+  for(let i=0;i<T;i++){const b=i*p;d+=(i?'L':'M')+pt(R,b-.16*p)+'L'+pt(R,b+.16*p)+'L'+pt(r,b+.30*p)+'L'+pt(r,b+.70*p);}
+  return d+'Z';
+}
+const ICONS={
+  gear:`<path d="${gearPath()}"/><circle cx="8" cy="8" r="2.3"/>`,
+  back:'<path d="M14 8H2.5M7 3 2 8l5 5"/>',chev:'<path d="m6 3 5 5-5 5"/>',x:'<path d="m3 3 10 10M13 3 3 13"/>',
+  min:'<path d="M3 8h10"/>',max:'<rect x="3.5" y="3.5" width="9" height="9" rx="1"/>',rest:'<rect x="3" y="5" width="8" height="8" rx="1"/><path d="M5.5 5V4a1 1 0 0 1 1-1H12a1 1 0 0 1 1 1v5.5a1 1 0 0 1-1 1h-1"/>',
+  play:'<path d="M5 3.2 12.5 8 5 12.8Z" fill="currentColor"/>',swap:'<path d="M2 5.5h11M10 2.5l3 3-3 3M14 10.5H3M6 7.5l-3 3 3 3"/>',
+  cam:'<rect x="1.5" y="4.5" width="9" height="7" rx="1.2"/><path d="m10.5 7 4-2v6l-4-2"/>',plug:'<path d="M6 1.5v3.5M10 1.5v3.5M4 5h8v2.5a4 4 0 0 1-8 0ZM8 11.5v3"/>',
+  bolt:'<path d="M9 1.5 3.5 9H7l-1 5.5L12 7H8.5Z" fill="currentColor" stroke="none"/>',lock:'<rect x="3.5" y="7" width="9" height="7" rx="1"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/>',
+  warn:'<path d="M8 2 14.5 13.5h-13ZM8 6.5v3.5M8 12v.2"/>',info:'<circle cx="8" cy="8" r="6"/><path d="M8 7.5V11M8 5v.2"/>',ok:'<path d="m3 8.5 3.5 3.5L13 4.5"/>',
+  pad:'<path d="M5 4.5h6a3.5 3.5 0 0 1 3.4 2.8l.6 3.2a1.8 1.8 0 0 1-3.2 1.4L10.5 10h-5l-1.3 1.9A1.8 1.8 0 0 1 1 10.5l.6-3.2A3.5 3.5 0 0 1 5 4.5Z"/><path d="M4.5 6.5v2M3.5 7.5h2M11 7.5h.1"/>',
+  eye:'<path d="M1.5 8S4 3.5 8 3.5 14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8Z"/><circle cx="8" cy="8" r="2"/>',
+  grid:'<rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/>',
+  deck:'<rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M5.5 6.5h.1M8 6.5h.1M10.5 6.5h.1M5.5 9.5h.1M8 9.5h.1M10.5 9.5h.1"/>',
+  down:'<path d="M8 2v8M4.5 7 8 10.5 11.5 7M2.5 13.5h11"/>',app:'<rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M2 6h12"/>',help:'<circle cx="8" cy="8" r="6"/><path d="M6.2 6.2a1.9 1.9 0 1 1 2.7 1.8c-.6.3-.9.7-.9 1.3M8 11.5v.2"/>',
+  mode:'<path d="M2 5.5h11M10 2.5l3 3-3 3M14 10.5H3M6 7.5l-3 3 3 3"/>'
+};
+function ic(n,s=16,sw=1.15){return `<svg class="ic" width="${s}" height="${s}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round">${ICONS[n]}</svg>`}
+
+/* ---------- Data the real app reads from the relay's globals; here it's a little simulator ---------- */
+const ACCENTS={gold:{n:'Gold (this PC)',d0:'#CB830A',d1:'#A96D09',l4:'#603E05'},blue:{n:'Blue (Windows default)',d0:'#99EBFF',d1:'#60CDFF',l4:'#005FB8'},green:{n:'Green',d0:'#8FE388',d1:'#5CC85A',l4:'#107C10'},pink:{n:'Pink',d0:'#FF9BC7',d1:'#F06BA8',l4:'#B4006A'}};
+const PADS={
+  dualsense:{name:'DualSense',conn:'USB',ps:true,batt:'pct',full:'PlayStation 5 controller (DualSense), wired, raw HID',caps:'Rumble, lightbar and battery all work.'},
+  dualsensebt:{name:'DualSense',conn:'Bluetooth',ps:true,batt:'none',why:"PlayStation pads don't report battery over Bluetooth here.",full:'PlayStation 5 controller (DualSense) over Bluetooth, raw HID',caps:"Rumble and lightbar work. Battery isn't reported."},
+  xbox:{name:'Xbox pad',conn:'wireless',ps:false,batt:'coarse',full:'Xbox-style controller (XInput)',caps:'Rumble and a coarse battery level work. No lightbar.'},
+  xboxw:{name:'Xbox pad',conn:'wired',ps:false,batt:'wired',full:'Xbox-style controller (XInput)',caps:'Rumble works. No lightbar, no battery on a wire.'}
+};
+const LBL={ps:{L1:'L1',R1:'R1',L2:'L2',R2:'R2',L3:'L3',R3:'R3',View:'Share',Menu:'Options',Guide:'PS',TP:'Touchpad',Y:'Triangle',B:'Circle',A:'Cross',X:'Square',Up:'Up',Down:'Down',Left:'Left',Right:'Right'},
+           xb:{L1:'LB',R1:'RB',L2:'LT',R2:'RT',L3:'L3',R3:'R3',View:'View',Menu:'Menu',Guide:'Guide',TP:'Touchpad',Y:'Y',B:'B',A:'A',X:'X',Up:'Up',Down:'Down',Left:'Left',Right:'Right'}};
+const DEFMAP=['A','B','X','Y','L1','R1','View','Menu','L3','R3','Up','Right','Down','Left','L2','R2','Guide','TP'];
+const FACE={dark:{xb:{Y:'#FFD23F',B:'#FF4D4D',A:'#3BD15C',X:'#3B8BFF'},ps:{Y:'#4CE0B3',B:'#FF6B6B',A:'#8CC4FF',X:'#FF96DA'}},
+            light:{xb:{Y:'#9D7A00',B:'#C42B1C',A:'#107C10',X:'#0F6CBD'},ps:{Y:'#00856F',B:'#C42B1C',A:'#2F6FB5',X:'#B4238C'}}};
+const S={theme:'dark',accent:'gold',focus:'front',pad:'xbox',scene:'head',tab:'telemetry',
+  relay:'ready',mode:'hotas',look:'head',fl:'none',head:'tracking',headWhy:'',hide:'ok',update:null,batt:72,charging:false,card:null,uacNo:false,
+  droppedAt:0,padKept:true,vpad:'x360',hotkey:'Ctrl+Alt+H',hotkeyFailed:false,toggle:['Guide'],hold:300,discord:[],map:DEFMAP.slice(),
+  flSpeed:9138,headSpeed:50,yaw:1,pitch:1,flipY:false,flipP:false,dead:.15,camera:'USB Camera',camMode:'640x480 at 60 fps',
+  gamePath:'D:\\Games\\game.exe',gameRunning:false,gameStarting:false,pipe:true,updCheck:true,autostart:false,startTray:false,console:false,consoleMode:false,
+  version:'2.0.0',winOpen:true,minimized:false,max:false,wr:null,prevWr:null,popInside:false,pop:null,stack:[],cap:null,edit:null,setup:null,test:false,upd:null,balloonDone:false,running:true,simMove:true,quitAsk:false,autoCycle:false,openXp:false,msg:'',
+  flash:null,ctlMin:false};
+const live={lx:0,ly:0,rx:0,ry:0,lt:0,rt:0,hx:0,hy:0,btn:new Set(),rate:0,tick:0},disp={lx:0,ly:0,rx:0,ry:0,lt:0,rt:0,hx:0,hy:0};
+const trail={L:[],R:[],H:[]};let centerX=0,centerY=0;
+const activity=[];
+function note(m){const d=new Date(),p=n=>String(n).padStart(2,'0');activity.push(p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds())+'  '+m);if(activity.length>40)activity.shift();}
+const lbl=k=>LBL[PADS[S.pad].ps?'ps':'xb'][k];
+const ready=()=>S.relay==='ready';
+const gameName=()=>{const m=S.gamePath&&S.gamePath.match(/[^\\]+$/);return m?m[0]:''};
+function toggleText(){if(!S.toggle.length)return 'no button';return S.toggle.map(lbl).join(' + ')+(S.hold?' '+(S.hold/1000)+' s':'')}
+function bindText(){return (S.hotkey==='none'?'':S.hotkey)+(S.hotkey!=='none'&&S.toggle.length?', ':'')+(S.toggle.length?toggleText():'')}
+const hintText=()=>{const hk=S.hotkey==='none'?'':S.hotkey,b=S.toggle.length?(S.hold?'hold ':'press ')+S.toggle.map(lbl).join(' + '):'';return (hk&&b?hk+' or '+b:hk||b)+' switches mode'};
+
+/* The status logic is one pure function: state in, words out. The boxes, tray tooltip and window title all use it. */
+function barColor(){
+  if(!ready())return null;const p=PADS[S.pad];
+  if(p.batt==='pct'&&S.batt<=15&&!S.charging)return '#FF0000';
+  if(S.mode==='unset')return '#FF3C00';
+  if(S.mode==='hotas')return '#00FF00';
+  return (p.ps?S.vpad==='ds4':S.vpad==='x360')?'#0064FF':'#A000FF';
+}
+function uiStatus(){
+  const p=PADS[S.pad],r1=lbl('R1'),m={label:'Mode',word:'',sub:'',cls:'',btn:null,unset:false},L={word:'',sub:'',wcls:'',cls:''},K={word:'Ready',sub:p.name+(p.conn?', '+p.conn:''),cls:'',more:0};
+  let take=null,worst=0;
+  if(S.mode==='unset'){m.word='Unset';m.label='Mode: game sees both';m.cls='f-warn';m.unset=true;worst=1}
+  else if(S.mode==='hotas'){m.word='HOTAS';m.sub='Game sees a stick';m.btn='normal'}
+  else{m.word='Normal';m.sub='Game sees '+(S.vpad==='ds4'?'a PlayStation pad':'an Xbox pad');m.btn='hotas'}
+  if(S.hotkeyFailed){m.sub="Hotkey didn't register";m.cls=m.cls||'l-warn';worst=Math.max(worst,1)}
+  if(S.mode==='normal'){L.word='Off';L.sub='HOTAS mode only';L.wcls='w-dim'}
+  else if(S.look==='off'){L.word='Off';L.sub='Free look off';L.wcls='w-dim'}
+  else if(S.fl==='locked'){L.word='Locked';L.sub='Tap '+r1+' or R3 to unlock';L.cls='f-lock'}
+  else if(S.look==='stick'){
+    if(S.fl==='looking'){L.word='Looking';L.sub='Let go = snap back. R3 = lock'}
+    else if(S.fl==='armed'){L.word='Lock set';L.sub='Let go, camera stays'}
+    else{L.word='Hold '+r1;L.sub='Free look, speed '+Math.round(S.flSpeed)}
+  }else if(S.head==='waiting'){L.word='Waiting';L.sub=S.headWhy;if(S.headWhy!=='Game not running')L.wcls='w-warn'}
+  else if(S.head==='noface'){L.word='No face';L.sub="Camera on, can't see you";L.wcls='w-warn'}
+  else if(S.head==='paused'){L.word='Paused';L.sub="Game doesn't have the mouse"}
+  else if(S.fl==='looking'){L.word='Stick';L.sub='Stick has the camera'}
+  else{L.word='Tracking';L.sub='Tap '+r1+' to recenter. Speed '+Math.round(S.headSpeed);L.wcls='w-ok'}
+  if(L.wcls==='w-warn')worst=Math.max(worst,1);
+  if(S.relay==='waiting')take={word:'No controller',sub:"Turn on any controller. Don't start your game until this says Ready.",cls:''};
+  else if(S.relay==='dropped'){const n=Math.round((Date.now()-S.droppedAt)/1000);take=S.padKept?{word:'No controller',sub:'Dropped '+n+' s ago. Game keeps its virtual pad. It reconnects by itself.',cls:'f-warn'}:{word:'No controller',sub:'Dropped '+n+" s ago. Game lost its virtual pad until you reconnect.",cls:'f-crit'};worst=S.padKept?1:2}
+  else if(S.relay==='stalled'){take={word:'Relay not responding',sub:'No new input for 2 s. Instruments are flagged until it comes back.',cls:'f-crit'};worst=2}
+  else{
+    const low=p.batt==='pct'&&S.batt<=15&&!S.charging;
+    if(S.hide==='failed'){K.word='Not hidden';K.sub='Real pad visible: game sees both';K.cls='f-warn';worst=Math.max(worst,1);K.more=low?1:0}
+    else if(S.pad==='xboxw'){K.sub="Wired Xbox pad can't be hidden";K.cls='l-warn'}
+    if(low){worst=2;if(!K.cls)K.cls='l-crit'}
+  }
+  return {m,L,K,take,worst};
+}
+function battHTML(){
+  const p=PADS[S.pad];
+  if(p.batt==='wired')return `<span class="batt" data-tip="This pad is on a wire. It doesn't report a battery.">${ic('plug',14)}Wired</span>`;
+  if(p.batt==='none')return `<span class="batt dimb" data-tip="${esc(p.why)}">Battery ?</span>`;
+  if(p.batt==='coarse')return `<span class="batt" data-tip="Xbox pads only report four levels.">${battGlyph(66,false)}Medium</span>`;
+  const v=S.batt,low=v<=15&&!S.charging,mid=v<=40&&!S.charging;
+  return `<span class="batt ${low?'crit':''}" data-tip="Red at 15 or below, the same point the lightbar turns red.">${battGlyph(v,mid,low)}${S.charging?ic('bolt',12):''}${v}%</span>`;
+}
+function battGlyph(v,mid,low){const c=low?'var(--crit)':mid?'var(--warn)':'currentColor';return `<svg width="24" height="12" viewBox="0 0 24 12" fill="none"><rect x=".5" y=".5" width="20" height="11" rx="2.5" stroke="${c}"/><rect x="21.5" y="4" width="2" height="4" rx="1" fill="${c}"/><rect x="2.5" y="2.5" width="${(16*v/100).toFixed(1)}" height="7" rx="1" fill="${c}"/></svg>`}
+function lookRing(){
+  const stalled=S.relay==='stalled';
+  if(stalled)return {title:'',flag:'No data',dash:1};
+  if(S.test)return {title:'Head test',follow:'head',dot:'var(--ok)'};
+  if(!ready())return {title:'',flag:'No input',dash:1};
+  if(S.look==='off')return {title:'',flag:'Off',dash:1};
+  if(S.mode!=='hotas')return {title:'',flag:'HOTAS only',dash:1};
+  if(S.fl==='locked')return {title:S.look==='head'?'Head':'Free look',follow:'frozen',dot:'var(--lock)',lock:1};
+  if(S.look==='stick')return S.fl==='none'?{title:'Free look',flag:'Hold '+lbl('R1')}:{title:'Free look',follow:'stick'};
+  if(S.head==='waiting')return {title:'Head',flag:'Waiting',dash:1};
+  if(S.head==='noface')return {title:'Head',follow:'frozen',hollow:1};
+  if(S.head==='paused'||S.fl==='looking')return {title:'Head',follow:'head',dimd:1};
+  return {title:'Head',follow:'head',dot:'var(--ok)'};
+}
+
+/* ---------- Build the scene ---------- */
+const CX={L:132,C:380,R:628};
+function ringSVG(id,cx,phys){return `<svg class="ring" id="${id}" ${phys?`data-phys="${phys}"`:''} viewBox="-100 -100 200 200" width="200" height="200" style="left:${cx-100}px;top:134px" data-tip="Smoothed for display. The game gets raw input.">
+  <circle class="hit" r="75"/><circle class="r" r="75"/><line class="c" x1="-75" x2="75"/><line class="c" y1="-75" y2="75"/>
+  <g class="tr">${[0,1,2,3,4].map(i=>`<circle r="${((3+i)*1.45).toFixed(1)}" fill-opacity="${((30+25*i)/255).toFixed(2)}"/>`).join('')}</g>
+  <circle class="d" r="16"/><circle class="k" r="7.3"/><text class="f" y="5"></text></svg>`}
+const TAGPOS={L2:[96,150],L1:[201,150],R1:[559,150],R2:[664,150],L3:[196,300],R3:[692,300],Up:[168,355],Down:[168,413],Left:[70,384],Right:[194,384],Y:[660,352],A:[660,416],X:[556,384],B:[700,384],View:[336,380],Guide:[380,380],Menu:[424,380],TP:[380,420]};
+function buildScene(){
+  $('#scene').innerHTML=`
+  <div class="box" id="bMode" data-open="mode" style="left:12px;width:232px"><i class="mbar" id="mBar"></i><div class="blabel" id="mLabel"></div><div class="bslot" id="mSlot"></div><div class="bword" id="mWord"></div><div class="bsub" id="mSub"></div></div>
+  <div class="box" id="bLook" data-open="look" style="left:252px;width:248px"><div class="blabel">Look</div><div class="bslot" id="lSlot"></div><div class="bword" id="lWord"></div><div class="bsub" id="lSub"></div></div>
+  <div class="box" id="bLink" data-open="link" style="left:508px;width:240px"><div class="blabel">Link</div><div class="bslot" id="kSlot"></div><div class="bword" id="kWord"></div><div class="bsub" id="kSub"></div></div>
+  <div id="tele">
+    <div class="tp L" id="pL2" data-phys="L2" style="left:31px"><span class="a" data-n="L2"></span><span class="b vL">0</span><i></i><div class="fillc"><span class="a" data-n="L2"></span><span class="b vL">0</span></div></div>
+    <div class="pb" data-phys="L1" style="left:169px;top:114px;width:64px;height:28px;border-radius:14px"><span data-n="L1"></span></div>
+    <div class="pb" data-phys="R1" style="left:527px;top:114px;width:64px;height:28px;border-radius:14px"><span data-n="R1"></span></div>
+    <div class="tp R" id="pR2" data-phys="R2" style="left:599px"><span class="a" data-n="R2"></span><span class="b vR">0</span><i></i><div class="fillc"><span class="a" data-n="R2"></span><span class="b vR">0</span></div></div>
+    <div class="ringt" id="ringT" style="left:280px"></div>
+    ${ringSVG('rL',CX.L,'L3')}${ringSVG('rC',CX.C,'')}${ringSVG('rR',CX.R,'R3')}
+    <div class="ro" id="roL" style="left:32px"></div><div class="ro" id="roR" style="left:528px"></div>
+    <div class="pb" data-phys="Up" style="left:120px;top:343px;width:24px;height:26px;border-radius:4px"></div>
+    <div class="pb" data-phys="Down" style="left:120px;top:399px;width:24px;height:26px;border-radius:4px"></div>
+    <div class="pb" data-phys="Left" style="left:92px;top:372px;width:26px;height:24px;border-radius:4px"></div>
+    <div class="pb" data-phys="Right" style="left:146px;top:372px;width:26px;height:24px;border-radius:4px"></div>
+    <div style="position:absolute;left:120px;top:372px;width:24px;height:24px;background:var(--btnoff);opacity:.45"></div>
+    <div class="fb" data-phys="Y" style="left:613px;top:340px"></div><div class="fb" data-phys="B" style="left:642px;top:369px"></div><div class="fb" data-phys="A" style="left:613px;top:398px"></div><div class="fb" data-phys="X" style="left:584px;top:369px"></div>
+    <div class="pb" data-phys="View" style="left:322px;top:345px;width:28px;height:28px;border-radius:50%"></div>
+    <div class="pb" data-phys="Guide" style="left:366px;top:345px;width:28px;height:28px;border-radius:50%"></div>
+    <div class="pb" data-phys="Menu" style="left:410px;top:345px;width:28px;height:28px;border-radius:50%"></div>
+    <div class="pb" data-phys="TP" id="tpad" style="left:320px;top:392px;width:120px;height:24px;border-radius:6px;font-weight:400;font-size:11px"></div>
+    <div id="tags"></div>
+  </div>
+  <div id="details" hidden></div>
+  <div id="foot"><button class="btn" id="launch" data-a="launch"></button><div id="hint"></div>
+    <div id="rate" data-tip="Input changes per second. 0 at rest is normal. The dot ticks when frames change, so a wiggle proves the pad is alive."><i id="tick"></i><span id="rateN">0/s</span></div>
+    <button class="ibtn" data-a="gear" data-tip="Settings">${ic('gear',18)}</button></div>
+  <div id="card" hidden></div>`;
+  $('#bMin').innerHTML=ic('min',12);$('#bX').innerHTML=ic('x',12);$('#barG').innerHTML=ic('gear',14);$('#barX').innerHTML=ic('x',12);
+}
+const LAYOUT_MIN_H=286;
+function desk(){const m=S.ctlMin||innerWidth<900?12:256;return {x0:m,y0:0,x1:innerWidth,y1:innerHeight-48}}
+function initPlace(){
+  const d=desk(),cw=d.x1-d.x0,W=Math.min(760,cw-16),H=Math.round(W*520/760);
+  const group=W+8+360,x=d.x0+Math.max(8,(cw-group)/2),y=d.y0+Math.max(8,(d.y1-d.y0-Math.max(H,520))/2);
+  S.wr={x,y,w:W,h:H};
+}
+function layout(){
+  const w=S.wr,win=$('#win'),d=desk();
+  if(S.max)Object.assign(w,{x:d.x0,y:0,w:d.x1-d.x0,h:d.y1});
+  win.style.cssText=`left:${w.x}px;top:${w.y}px;width:${w.w}px;height:${w.h}px`;
+  win.classList.toggle('maxed',S.max);
+  const bar=!S.max&&w.h<LAYOUT_MIN_H;win.classList.toggle('isbar',bar);
+  const capH=bar?0:32,aw=w.w-(S.popInside?368:0),ah=w.h-capH;let s,tx,ty;
+  if(bar){s=Math.min(aw/760,ah/108);tx=(aw-760*s)/2;ty=(ah-108*s)/2}
+  else{s=clamp(Math.min(aw/760,ah/488),S.popInside?.4:.55,3);tx=Math.max(0,(aw-760*s)/2);ty=Math.max(0,(ah-488*s)/2)}
+  const sc=$('#scene');sc.style.transform=`translate(${tx}px,${ty}px) scale(${s})`;sc.classList.toggle('s-small',s<.75);sc.style.setProperty('--s',s);
+  $('#bMax').innerHTML=ic(S.max?'rest':'max',12);
+  placePop();
+}
+function placePop(){
+  const pop=$('#pop');if(pop.hidden)return;
+  const d=desk(),w=S.wr,pw=360;$('#pbody').style.maxHeight=(d.y1-16)+'px';
+  const ph=pop.offsetHeight;let x,inside=false;
+  if(w.x+w.w+8+pw<=d.x1)x=w.x+w.w+8;
+  else if(w.x-8-pw>=d.x0)x=w.x-8-pw;
+  else{inside=true;x=w.x+w.w-pw-8}
+  const y=clamp(w.y+w.h-ph-(inside?8:0),8,d.y1-ph-8);
+  pop.style.left=x+'px';pop.style.top=y+'px';
+  if(inside!==S.popInside){S.popInside=inside;layout()}
+}
+
+/* ---------- Status and instruments: only runs when state changes ---------- */
+const setT=(el,t)=>{if(el.textContent!==t)el.textContent=t};
+const setC=(el,c)=>{if(el._c!==c){el._c=c;el.className=c}};
+function renderStatus(){
+  dirty=true;
+  const st=uiStatus(),{m,L,K,take}=st,p=PADS[S.pad],color=barColor();
+  setT($('#mLabel'),m.label);setT($('#mWord'),m.word);setC($('#bMode'),'box '+m.cls);
+  $('#mBar').style.background=color||'var(--subtle)';
+  $('#mBar').dataset.tip=color?'The same color as the pad\'s real lightbar.':'';
+  $('#mSub').innerHTML=m.unset?`<div style="display:flex;gap:6px;margin-top:-2px"><button class="btn sm" data-a="setMode" data-v="hotas">HOTAS</button><button class="btn sm" data-a="setMode" data-v="normal">Normal</button></div>`:esc(m.sub);
+  $('#mSlot').innerHTML=m.btn?`<button class="btn sm" data-a="setMode" data-v="${m.btn}" data-tip="Switch to ${m.btn==='hotas'?'HOTAS':'Normal'}. Do this before launching a game.">${ic('swap',12)}${m.btn==='hotas'?'HOTAS':'Normal'}</button>`:'';
+  setT($('#lWord'),L.word);setT($('#lSub'),L.sub);setC($('#lWord'),'bword '+L.wcls);setC($('#bLook'),'box '+L.cls);
+  const camOn=(S.test||(S.look==='head'&&S.mode==='hotas'&&ready()&&S.head!=='waiting'));
+  const alt=S.fl!=='none'&&ready()&&S.mode==='hotas';
+  $('#lSlot').innerHTML=(camOn?`<span class="chip" data-tip="Your camera is on. No picture is stored, shown or sent.">${ic('cam',12)}Camera</span>`:'')+(alt?`<span class="chip" data-tip="The relay is holding Left Alt for free look. It's always released when you let go.">Alt</span>`:'');
+  const sc=$('#scene');sc.classList.toggle('takeover',!!take);
+  const wasFlash=S.flash,nowFlash=take&&take.cls?take.cls:null;
+  if(take){setT($('#kWord'),take.word);setT($('#kSub'),take.sub);setC($('#bLink'),'box '+take.cls);$('#kSlot').innerHTML=''}
+  else{setT($('#kWord'),K.word);setT($('#kSub'),K.sub);setC($('#bLink'),'box '+K.cls);$('#kSlot').innerHTML=(K.more?`<span class="more" data-tip="One more problem. Click to see all of them.">+${K.more}</span>`:'')+battHTML()}
+  if(nowFlash&&nowFlash!==wasFlash){const b=$('#bLink');b.classList.remove('flash');void b.offsetWidth;b.classList.add('flash');$('#tbw').classList.remove('flash');void $('#tbw').offsetWidth;$('#tbw').classList.add('flash')}
+  S.flash=nowFlash;
+  /* Footer */
+  const la=$('#launch');la.disabled=false;
+  if(!S.gamePath){la.className='btn';la.innerHTML=ic('play',12)+'Choose game'}
+  else if(S.gameStarting){la.className='btn';la.disabled=true;la.textContent='Starting'}
+  else if(S.gameRunning){la.className='btn';la.disabled=true;la.textContent='Game running'}
+  else if(!ready()){la.className='btn';la.disabled=true;la.textContent='Launch waits for Ready'}
+  else{la.className='btn acc';la.innerHTML=ic('play',12)+'Launch game'}
+  const hint=S.scene==='unset'?'Toggle is '+S.hotkey+' and '+lbl('Guide')+'. A Game Bar setting is switched while the relay runs and restored on exit.':take&&S.relay==='waiting'?"Turn the pad on and it connects by itself.":S.edit?editHint():hintText();
+  setT($('#hint'),hint);
+  /* Ring look */
+  const lr=lookRing(),rC=$('#rC');
+  rC.setAttribute('class','ring'+(lr.dash?' dash':'')+(lr.flag?' flag':'')+(lr.hollow?' hollow':'')+(lr.dimd?' dimd':''));
+  rC.style.setProperty('--dot',lr.dot||'var(--acc-thin)');
+  setT($('#rC .f'),lr.flag||'');
+  setT($('#ringT'),lr.title||'');
+  const flagged=!ready()&&!S.test;
+  for(const id of ['rL','rR']){const r=$('#'+id);r.classList.toggle('dash',flagged);setT($('.f',r),flagged?(S.relay==='stalled'?'No data':'No input'):'')}
+  $('#tele').classList.toggle('dead',flagged);
+  /* Labels */
+  $$('[data-n]').forEach(e=>setT(e,lbl(e.dataset.n)));
+  const ps=PADS[S.pad].ps,fc=FACE[S.theme][ps?'ps':'xb'];
+  for(const k of ['Y','B','A','X']){const e=$(`.fb[data-phys=${k}]`);e.style.setProperty('--fc',fc[k]);e.innerHTML=faceSym(k,ps)}
+  $('[data-phys=View]').innerHTML=`<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1" y="1" width="8" height="7"/><rect x="5" y="6" width="8" height="7"/></svg>`;
+  $('[data-phys=Menu]').innerHTML=`<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M1.5 3h11M1.5 7h11M1.5 11h11"/></svg>`;
+  $('[data-phys=Guide]').innerHTML=ps?'PS':`<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="7" cy="7" r="5.5"/><circle cx="7" cy="7" r="1.6" fill="currentColor"/></svg>`;
+  const tp=$('#tpad');tp.hidden=!ps;tp.textContent=ps?'Touchpad':'';
+  renderTags();
+  /* Tabs */
+  $$('.tab').forEach(t=>t.classList.toggle('sel',t.dataset.v===S.tab));
+  $('#tele').hidden=S.tab!=='telemetry';$('#details').hidden=S.tab!=='details';
+  $('#capchip').innerHTML=S.update?`<button class="chip-up" data-a="open" data-v="updates">Update ${S.update}</button>`:'';
+  renderCard();renderTray();renderCtlActive();
+  if(S.tab==='details')renderDetails();
+}
+function faceSym(k,ps){if(!ps)return k;const m={Y:'<path d="M12 5 19 17H5Z"/>',B:'<circle cx="12" cy="12" r="6.5"/>',A:'<path d="m6 6 12 12M18 6 6 18"/>',X:'<rect x="6" y="6" width="12" height="12"/>'}[k];return `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round">${m}</svg>`}
+function slotOf(ph){return S.map.indexOf(ph)}
+function renderTags(){
+  const ps=PADS[S.pad].ps;let h='';
+  const put=(ph,t,c='')=>{if(ph==='TP'&&!ps)return;const p=TAGPOS[ph];if(p)h+=`<span class="tag ${c}" style="left:${p[0]}px;top:${p[1]}px">${esc(t)}</span>`};
+  if(S.edit&&S.edit.kind==='map'){for(const ph of DEFMAP){put(ph,'#'+(slotOf(ph)+1),'num')}}
+  else if(ready()){
+    if(S.mode==='hotas'){DEFMAP.forEach((ph,i)=>{if(S.map[i]!==ph){const owner=DEFMAP[S.map.indexOf(ph)];put(ph,'>'+lbl(owner),'rm')}})}
+    const fl=S.look!=='off'&&S.mode==='hotas';
+    if(fl){put('R1','Look');put('R3','R3 lock')}
+    S.toggle.forEach(ph=>put(ph,'Switch'+(S.hold?' '+S.hold/1000+' s':'')));
+  }
+  $('#tags').innerHTML=h;
+  $$('.picked').forEach(e=>e.classList.remove('picked'));
+  if(S.edit){(S.edit.kind==='map'?(S.edit.sel?[S.edit.sel]:[]):S.edit.picks).forEach(ph=>{const e=$(`[data-phys=${ph}]`);if(e)e.classList.add('picked')})}
+  $('#scene').classList.toggle('editing',!!S.edit);
+}
+
+/* ---------- Live drawing. Source is every real change, drawn at 60 fps at most, 30 with a game in front, and nothing is drawn when nothing moved. ---------- */
+let lastSrc=0,lastTrail=0,lastDraw=0,draws=0,fpsAt=0,fps=0,dirty=true;
+const CACHE={};
+function ringEls(id){return CACHE[id]||(CACHE[id]={svg:$('#'+id),d:$('#'+id+' .d'),k:$('#'+id+' .k'),tr:$$('#'+id+' .tr circle')})}
+function simTick(t){
+  if(!ready()){Object.assign(live,{lx:0,ly:0,rx:0,ry:0,lt:0,rt:0,rate:0});if(live.btn.size){live.btn.clear();applyBtns()}return}
+  const rest=!S.simMove||Math.sin(t*.21)>.9;
+  if(rest){Object.assign(live,{lx:0,ly:0,rx:0,ry:0,lt:0,rt:0,rate:0});if(live.btn.size&&!S.autoCycle){live.btn.clear();applyBtns()}}
+  else{
+    live.lx=62*Math.sin(t*.9)+18*Math.sin(t*2.7+1);live.ly=48*Math.sin(t*.37+1)+12*Math.sin(t*1.9);
+    live.rx=70*Math.sin(t*.53+2)+16*Math.sin(t*3.1);live.ry=54*Math.cos(t*.71)+10*Math.sin(t*2.2);
+    live.lt=Math.max(0,100*Math.pow(Math.max(0,Math.sin(t*.55)),2));live.rt=Math.max(0,100*Math.pow(Math.max(0,Math.sin(t*.43+2)),3));
+    live.rate=Math.round(120+90*Math.abs(Math.sin(t*1.3)));
+    if(!S.edit&&Math.random()<.0125){
+      const pool=['A','B','X','Y','L1','Up','Down','Left','Right','View','Menu'].concat(PADS[S.pad].ps?['TP']:[]);
+      const b=pool[Math.floor(Math.random()*pool.length)];
+      live.btn.add(b);applyBtns();setTimeout(()=>{live.btn.delete(b);applyBtns()},180+Math.random()*320);
+    }
+    if(!S.edit&&Math.random()<.002){const b=Math.random()<.5?'L3':'R3';live.btn.add(b);applyBtns();setTimeout(()=>{live.btn.delete(b);applyBtns()},450)}
+  }
+  live.tick^=live.rate?1:0;
+  if(S.autoCycle){const c=Math.floor(t/5)%2===1;if(c&&S.fl==='none'){S.fl='looking';live.btn.add('R1');applyBtns();renderStatus();}else if(!c&&S.fl==='looking'){S.fl='none';live.btn.delete('R1');applyBtns();renderStatus();}}
+}
+function simHead(t){
+  if(S.head==='noface'||S.fl==='locked')return;
+  const f=S.simMove?1:0,y=(38*Math.sin(t*.7)+14*Math.sin(t*1.9))*f*(S.flipY?-1:1)*S.yaw,p=(22*Math.sin(t*.5+1)+8*Math.sin(t*2.3))*f*(S.flipP?-1:1)*S.pitch;
+  live.hx=clamp(y-centerX,-100,100);live.hy=clamp(p-centerY,-100,100);
+}
+function applyBtns(){$$('[data-phys]').forEach(e=>{const ph=e.dataset.phys;if(ph==='L3'||ph==='R3'||ph==='L2'||ph==='R2')return;e.classList.toggle('on',live.btn.has(ph)&&!$('#tele').classList.contains('dead'))})}
+function drawDot(id,x,y,show,dimRest){
+  const r=ringEls(id);
+  r.d.style.display=r.k.style.display=show?'':'none';
+  r.tr.forEach(c=>c.style.display=show?'':'none');
+  if(!show)return;
+  const m=Math.hypot(x,y),q=m>100?100/m:1,px=x*q*.75,py=-y*q*.75;
+  r.d.setAttribute('cx',px.toFixed(1));r.d.setAttribute('cy',py.toFixed(1));r.k.setAttribute('cx',px.toFixed(1));r.k.setAttribute('cy',py.toFixed(1));
+  const o=dimRest?(.55+.45*clamp(m/8,0,1)).toFixed(2):'';r.d.style.opacity=o;r.k.style.opacity=o;
+}
+function drawTrail(id,arr,invertY){const r=ringEls(id);r.tr.forEach((c,i)=>{const a=arr[i];if(!a||a.x===undefined){c.style.display='none';return}const m=Math.hypot(a.x,a.y),q=m>100?100/m:1;c.setAttribute('cx',(a.x*q*.75).toFixed(1));c.setAttribute('cy',((invertY?-1:1)*a.y*q*.75).toFixed(1));c.style.display=m<1?'none':''})}
+function pushTrail(arr,x,y){arr.push({x,y});if(arr.length>5)arr.shift()}
+const signed=v=>(v<0?'-':'+')+String(Math.abs(Math.round(v))).padStart(2,'0');
+function frame(now){
+  requestAnimationFrame(frame);
+  if(!S.running)return;
+  const t=now/1000;
+  if(now-lastSrc>=16){lastSrc=now;simTick(t)}
+  if(now-lastTrail>=66){lastTrail=now;
+    pushTrail(trail.L,live.lx,live.ly);pushTrail(trail.R,live.rx,live.ry);pushTrail(trail.H,live.hx,live.hy);
+    if(S.console&&!$('#con').hidden)renderConsole();
+  }
+  simHead(t);
+  if(now-fpsAt>=1000){fps=draws;draws=0;fpsAt=now;setT($('#stFps'),fps+' fps');}
+  if(!S.winOpen||S.minimized)return;
+  if(now-lastDraw<(S.focus==='front'?15:33))return;
+  const dt=Math.min(100,now-lastDraw);lastDraw=now;
+  const k=1-Math.exp(-dt/20),hk=1-Math.exp(-dt/20);let moved=false;
+  for(const n of ['lx','ly','rx','ry','lt','rt']){const d=live[n]-disp[n];if(Math.abs(d)>.25){disp[n]+=d*k;moved=true}else if(d!==0){disp[n]=live[n];moved=true}}
+  for(const n of ['hx','hy']){const d=live[n]-disp[n];if(Math.abs(d)>.25){disp[n]+=d*hk;moved=true}else if(d!==0){disp[n]=live[n];moved=true}}
+  const unsettled=a=>a.some(p=>Math.abs(p.x-a[a.length-1].x)>.5||Math.abs(p.y-a[a.length-1].y)>.5);
+  if(unsettled(trail.L)||unsettled(trail.R)||unsettled(trail.H))moved=true;
+  if((!moved&&!dirty)||S.tab!=='telemetry'||!$('#card').hidden)return;
+  dirty=false;draws++;
+  const rd=ready();
+  drawDot('rL',disp.lx,disp.ly,rd,true);drawDot('rR',disp.rx,disp.ry,rd,true);
+  if(rd){drawTrail('rL',trail.L,true);drawTrail('rR',trail.R,true)}
+  const lr=lookRing(),rc=ringEls('rC');
+  if(lr.follow==='head'){drawDot('rC',disp.hx,-disp.hy,true,false);drawTrail('rC',trail.H.map(p=>({x:p.x,y:p.y})),false)}
+  else if(lr.follow==='stick'){drawDot('rC',disp.rx,disp.ry,true,false);drawTrail('rC',trail.R,true)}
+  else if(lr.follow==='frozen'){drawDot('rC',disp.hx,-disp.hy,true,false);rc.tr.forEach(c=>c.style.display='none')}
+  else drawDot('rC',0,0,false);
+  $('#rL').classList.toggle('thick',rd&&live.btn.has('L3'));$('#rR').classList.toggle('thick',rd&&live.btn.has('R3'));
+  const pL=$('#pL2'),pR=$('#pR2'),lv=Math.round(disp.lt),rv=Math.round(disp.rt);
+  pL.style.setProperty('--p',disp.lt.toFixed(1));pR.style.setProperty('--p',disp.rt.toFixed(1));
+  $$('.vL').forEach(e=>setT(e,String(lv)));$$('.vR').forEach(e=>setT(e,String(rv)));
+  pL.classList.toggle('clk',lv>10);pR.classList.toggle('clk',rv>10);
+  setT($('#roL'),rd?`X ${signed(live.lx)}   Y ${signed(live.ly)}`:'');setT($('#roR'),rd?`X ${signed(live.rx)}   Y ${signed(live.ry)}`:'');
+  setT($('#rateN'),live.rate+'/s');$('#tick').classList.toggle('on',!!live.tick);
+}
+
+/* ---------- Details tab ---------- */
+function renderDetails(){
+  const p=PADS[S.pad],d=$('#details'),top=d.scrollTop,seen=S.mode==='hotas'?'a stick':S.mode==='unset'?'both':(S.vpad==='ds4'?'a PlayStation pad':'an Xbox pad');
+  const hid=!ready()?'':S.hide==='failed'?'Not hidden':S.pad==='xboxw'?"Can't be hidden":'Hidden';
+  const row=(i,c,a,b,x='')=>`<div class="dr"><div class="${c}">${i?ic(i,14):''}</div><b>${a}</b><span>${b}</span><div>${x}</div></div>`;
+  const camOn=S.test||(S.look==='head'&&S.mode==='hotas'&&ready()&&S.head!=='waiting');
+  d.innerHTML=`
+  <div class="path">${ready()?esc(p.name+(p.conn?', '+p.conn:'')):'<em>No controller</em>'} ${ic('chev',12)} ${hid?`<span class="${hid==='Hidden'?'':'bad'}">${hid}</span> ${ic('chev',12)}`:''} <span>Game sees ${seen}</span></div>
+  <div class="dh">This PC</div>
+  ${row('ok','good','vJoy','Installed. Your virtual joystick.')}${row('ok','good','HidHide','Installed. Keeps games from seeing the real pad.')}${row('ok','good','ViGEmBus','Installed. Your virtual gamepad.')}
+  ${ready()?row(S.hide==='failed'?'warn':'ok',S.hide==='failed'?'bad':'good','Your controller',S.hide==='failed'?'NOT hidden. Your game sees both. The relay retries when it reconnects.':S.pad==='xboxw'?"A wired Xbox pad can't be hidden.":'Hidden from games. Back to normal when you quit.'):row('info','muted','Your controller','Not connected.')}
+  ${row('info','muted','Game Bar','Guide button capture off until you quit.')}${row('info','muted','Internet',S.updCheck?'Only GitHub, only for update checks. On.':'Update checks are off. No internet use.')}
+  ${row('info','muted','Camera',camOn?'On. Only head angles are used. No picture is stored, shown or sent.':'Off. It only turns on while your game runs in HOTAS mode.')}
+  ${row('info','muted','Starts with Windows',S.autostart?'Yes, through a scheduled task.':'No.')}
+  ${row('','','Remove everything','<code>--uninstall</code> in a console, on purpose.',`<button class="btn sm" data-a="flash" data-v="Copied">Copy command</button>`)}
+  <div class="dh">Right now</div>
+  ${row('','','Controller',ready()?esc(p.full):'None')}${row('','','Output',S.mode==='hotas'?'vJoy device 2, pump running. Virtual pad muted.':S.mode==='normal'?'Virtual pad live. vJoy muted.':'Both live until you pick a mode.')}
+  <div class="dr"><div></div><b>Raw sticks</b><span class="mono" id="dRaw"></span><div></div></div>
+  <div class="dr"><div></div><b>Head</b><span class="mono" id="dHead"></span><div></div></div>
+  ${row('','','Stream Deck',S.pipe?'Pipe on':'Pipe off')}${row('','','Input changes',`<span id="dRate">0</span>/s`)}
+  <button class="xp ${S.openXp?'open':''}" data-a="xp">${ic('chev',12)}Joystick buttons (18)</button>
+  ${S.openXp?`<div class="grid18">${S.map.map((ph,i)=>`<span>vJoy ${i+1}: ${lbl(ph)}</span>`).join('')}</div>`:''}
+  <div class="dh">Activity</div><div class="log">${activity.slice(-12).map(esc).join('\n')}</div>
+  <div class="drow"><button class="btn sm" data-a="flash" data-v="Copied">Copy all</button><button class="btn sm" data-a="flash" data-v="Opens the log">Open log</button><button class="btn sm" data-a="flash" data-v="Opens the settings file">Open settings file</button><span class="note" id="dMsg" style="margin:4px 0 0"></span></div>`;
+  d.scrollTop=top;tickDetails();
+}
+function tickDetails(){
+  const a=$('#dRaw');if(!a)return;const raw=v=>Math.round(v*327.67);
+  a.textContent=ready()?`LX ${raw(live.lx)}  LY ${raw(live.ly)}  RX ${raw(live.rx)}  RY ${raw(live.ry)}  LT ${Math.round(live.lt*2.55)}  RT ${Math.round(live.rt*2.55)}`:'No input';
+  $('#dHead').textContent=(S.look==='head'&&S.mode==='hotas'&&S.head!=='waiting'&&ready())?`31 fps, 6.2 ms, ${S.camMode}, gate ${S.head==='paused'?'shut':'open'}`:'Camera off';
+  $('#dRate').textContent=live.rate;
+}
+
+/* ---------- Full-window pages ---------- */
+let installTimer=null;
+function renderCard(){
+  $('.tabs').hidden=!!S.card;
+  const c=$('#card'),sc=$('#scene');c.hidden=!S.card;sc.classList.toggle('cardmode',!!S.card);if(!S.card)return;
+  if(S.card==='welcome'){c.innerHTML=`<div class="cbody"><div style="display:flex;align-items:center;gap:14px;margin:8px 0 12px"><svg width="56" height="56" style="flex:none"><use href="#hex"/></svg><h2 style="margin:0;font-size:28px;line-height:36px">Welcome</h2></div><p>Fly with your controller. This makes a game see it as a joystick or as a normal gamepad, and you switch any time.</p>
+    <p style="color:var(--text);margin-bottom:4px">It needs three small drivers. Here's exactly what happens when you press Set up:</p>
+    <ol><li>Windows asks your permission, once</li><li>A restore point is made, so you can go back</li><li>vJoy, HidHide and ViGEmBus are installed</li></ol>
+    ${S.uacNo?`<p class="note warn" style="margin:0 0 8px">Windows permission wasn't given. Nothing changed. You can try again.</p>`:'<p>Nothing has changed on your PC yet.</p>'}
+    <button class="xp ${S.openXp?'open':''}" data-a="xp">${ic('chev',12)}What are these, and how do I remove them?</button>
+    ${S.openXp?`<div class="keys"><b>vJoy</b><span>The virtual stick a game sees in HOTAS mode.</span><b>HidHide</b><span>Hides your real pad, so the game doesn't see two.</span><b>ViGEmBus</b><span>The virtual gamepad for Normal mode.</span><b>Removing</b><span>Run the relay with <code>--uninstall</code> in a console.</span></div>`:''}</div>
+    <div class="cfoot"><p class="note">Windows may say Unknown publisher. That's expected for free software without a paid certificate.</p><button class="btn" data-a="close">Not now</button><button class="btn acc" data-a="install">${S.uacNo?'Try again':'Set up'}</button></div>`;}
+  else if(S.card==='install'){const rows=[['Restore point','so you can go back'],['vJoy','the virtual stick the game sees'],['HidHide','hides your real pad from the game'],['ViGEmBus','the virtual gamepad for Normal mode'],['Virtual stick','setting it up for this session']];const i=S.installStep||0;
+    c.innerHTML=`<div class="band"><div class="bword">Getting ready</div><p>Three small drivers. Windows asked once. You can undo all of it.</p></div><div class="cbody">${rows.map((r,n)=>`<div class="crow"><div class="${n<i?'good':''}">${n<i?ic('ok',16):n===i?'<div class="spin"></div>':''}</div><b style="font-weight:400">${r[0]}</b><span>${r[1]}</span><span class="st">${n<i?'Done':n===i?'Working':'Waiting'}</span></div>`).join('')}</div><div class="cfoot"><p class="note">This usually takes about a minute. It's safe to wait.</p></div>`;}
+  else if(S.card==='reboot'){c.innerHTML=`<div class="band f-warn"><div class="bword">Restart needed</div><p>Windows has a restart waiting from another install. The drivers can't go in until it's done.</p></div><div class="cbody"><p>Nothing has been installed. After the restart, open the relay again and it carries on from here.</p></div><div class="cfoot"><button class="btn" data-a="quit">Quit</button><button class="btn acc" data-a="flash" data-v="Restarts Windows">Restart now</button></div>`;}
+  else if(S.card==='fatal'){c.innerHTML=`<div class="band f-crit"><div class="bword">Couldn't start</div><p>Everything the relay set up has been cleaned up. Your real controller is back to normal.</p></div><div class="cbody"><p style="color:var(--text)">Could not create the vJoy device. Another program may be holding it.</p><p>The full reason is in the log. This window opened by itself and didn't take focus from your game. Nothing is left waiting in the background.</p></div><div class="cfoot"><button class="btn" data-a="flash" data-v="Copied">Copy details</button><button class="btn" data-a="flash" data-v="Opens the log">Open log</button><button class="btn acc" data-a="quit">Quit</button></div>`;}
+}
+function runInstall(){
+  S.installStep=0;S.card='install';S.scene='install';S.uacNo=false;renderStatus();clearInterval(installTimer);
+  installTimer=setInterval(()=>{S.installStep++;if(S.installStep>=5){clearInterval(installTimer);setScene('waiting');return}renderStatus()},1100);
+}
+
+/* ---------- Settings popup ---------- */
+const H={
+  head:(t,r='')=>`<div class="phead"><button class="ibtn" data-a="back" data-tip="Back">${ic('back',14)}</button><div class="ptitle">${t}</div>${r}</div>`,
+  row:(l,c)=>`<div class="prow"><span>${l}</span>${c}</div>`,
+  tgl:(k,on,dis='')=>`<button class="tgl ${on?'on':''}" data-a="tgl" data-v="${k}" role="switch" aria-checked="${!!on}" ${dis}><i></i></button>`,
+  seg:(k,opts,val)=>`<div class="seg">${opts.map(([v,t])=>`<button class="${v===val?'sel':''}" data-a="seg" data-k="${k}" data-v="${v}">${t}</button>`).join('')}</div>`,
+  note:(t,c='')=>`<div class="note ${c}">${t}</div>`,
+  btn:(t,a,v='',c='',x='')=>`<button class="btn ${c}" data-a="${a}" data-v="${v}" ${x}>${t}</button>`,
+  hr:'<div class="hr"></div>',
+  lab:t=>`<div class="plabel">${t}</div>`,
+  radio:(k,v,cur,t,sub='')=>`<button class="lrow ${v===cur?'sel':''}" data-a="radio" data-k="${k}" data-v="${v}"><i></i><span>${t}${sub?`<div class="note" style="margin:0">${sub}</div>`:''}</span></button>`,
+  tile:(icon,t,v,page)=>`<button class="tile" data-a="open" data-v="${page}"><span class="i">${ic(icon,18)}</span><span class="t">${t}</span><span class="c">${ic('chev',11)}</span><span class="v">${esc(v)}</span></button>`
+};
+function pctOf(k,v){const c=SLIDERS[k];return c.log?Math.log(v/c.min)/Math.log(c.max/c.min)*100:(v-c.min)/(c.max-c.min)*100}
+const SLIDERS={flSpeed:{log:1,min:200,max:40000,fmt:v=>String(Math.round(v))},headSpeed:{log:1,min:1,max:2000,fmt:v=>String(Math.round(v))},yaw:{min:0,max:3,step:.05,fmt:v=>v.toFixed(2)+'x'},pitch:{min:0,max:3,step:.05,fmt:v=>v.toFixed(2)+'x'},dead:{min:0,max:10,step:.05,fmt:v=>v.toFixed(2)+'\u00B0'}};
+function slider(k){const c=SLIDERS[k],v=S[k],p=pctOf(k,v);const attrs=c.log?`min="0" max="1000" step="1" value="${(p*10).toFixed(0)}"`:`min="${c.min}" max="${c.max}" step="${c.step}" value="${v}"`;return `<div class="sl"><input type="range" data-s="${k}" ${attrs} style="--p:${p.toFixed(1)}%" aria-label="${k}"><span class="slv" id="v-${k}">${c.fmt(v)}</span></div>`}
+function capField(kind,value,label,changeAct,clearAct,clearDis){
+  const armed=(S.cap&&S.cap.kind===kind)||(S.edit&&S.edit.kind===kind);
+  if(armed){const left=S.cap?S.cap.left:0,prompt=kind==='hotkey'?'Press the keys now':'Press and hold on your pad';
+    return `<div class="capf arm"><span>${prompt}. Esc cancels.</span><span class="slv">${left} s</span></div>`}
+  return `<div class="capf"><span>${esc(value)}</span><span style="display:flex;gap:4px"><button class="btn sm" data-a="${changeAct}">Change</button>${clearAct?`<button class="btn sm" data-a="${clearAct}" ${clearDis?'disabled data-tip="You need at least one way to switch modes."':''}>None</button>`:''}</span></div>`;
+}
+const PAGES={
+  rack(){const ch=S.map.filter((v,i)=>v!==DEFMAP[i]).length;
+    return `<div class="phead" style="margin-left:0"><div class="ptitle">Settings</div></div><div class="tiles">
+    ${H.tile('mode','Mode',bindText()||'No bindings','mode')}${H.tile('pad','Virtual pad',(S.vpad==='ds4'?'PlayStation':'Xbox')+', auto-match','vpad')}
+    ${H.tile('eye','Look',S.look==='off'?'Off':S.look==='stick'?'Stick, speed '+Math.round(S.flSpeed):'Head, speed '+Math.round(S.headSpeed),'look')}${H.tile('cam','Head tracking',S.camera?S.camera+', ready':'Not set up','head')}
+    ${H.tile('grid','Button map',ch?ch+' changed':'Default','map')}${H.tile('play','Game',gameName()||'Not chosen','game')}
+    ${H.tile('deck','Deck and Discord',(S.pipe?'Deck on':'Deck off')+(S.discord.length?', mute button set':''),'deck')}${H.tile('down','Updates',S.update?S.update+' is ready':S.version+(S.updCheck?', checks on':', checks off'),'updates')}
+    ${H.tile('app','App',S.autostart?'Starts with Windows':'Starts by hand','app')}${H.tile('help','Help','Controls, unhide','help')}</div>
+    ${H.hr}${H.note('Closing the window keeps the relay running in the tray.')}
+    ${S.quitAsk?`<div class="note warn">Your game loses its controller. Your real controller comes back when the relay closes.</div><div class="pfoot"><span></span><span style="display:flex;gap:8px">${H.btn('Keep running','quitNo')}${H.btn('Quit the relay','quitYes')}</span></div>`:H.btn('Quit the relay','quit')}`},
+  mode(){return H.head('Mode')+
+    H.seg('mode',[['hotas','HOTAS'],['normal','Normal']],S.mode==='unset'?'':S.mode)+H.note(S.mode==='hotas'?'Game sees a stick. The virtual pad is muted.':S.mode==='normal'?'Game sees a gamepad. The joystick is muted.':'Both are live until you pick. It stays picked next time.')+
+    H.lab('Keyboard shortcut')+capField('hotkey',S.hotkey==='none'?'None':S.hotkey,'', 'capHotkey','hotkeyNone',!S.toggle.length)+H.note(S.capMsg||'Works anywhere, even in your game.',S.capMsg?'warn':'')+
+    H.lab('Controller button')+capField('toggle',S.toggle.length?S.toggle.map(lbl).join(' + '):'None','','capToggle','toggleNone',S.hotkey==='none')+
+    (S.edit&&S.edit.kind==='toggle'?H.note('Your presses still reach the game. Mock-up: click one or two buttons on the panel.'):H.note(S.toggle.some(p=>['Guide','TP'].includes(p))?"Your game won't get this button while it's the switch.":'Your game still gets this button.'))+
+    H.lab('Hold to switch')+H.seg('hold',[['0','Off'],['300','0.3 s'],['500','0.5 s'],['1000','1 s']],String(S.hold))+
+    H.note('Switch mode before launching a game.')},
+  vpad(){return H.head('Virtual pad')+H.seg('vpad',[['x360','Xbox'],['ds4','PlayStation']],S.vpad)+H.note('Matches your controller each time it connects, and that resets this choice. Changing it pulls the pad from a running game for a moment.')+(S.mode==='hotas'?H.note('In HOTAS mode the game sees the stick, so this only matters once you switch to Normal.'):'')},
+  look(){const head=S.look==='head',on=S.look!=='off',k=head?'headSpeed':'flSpeed';
+    return H.head('Look')+H.seg('look',[['off','Off'],['stick','Stick'],['head','Head']],S.look)+
+    (on?`<div class="prow" style="margin-top:8px"><span>${head?'Head speed':'Stick speed'}</span><span class="step"><button class="btn" data-a="stepSpeed" data-v="-1" data-tip="20% slower">-</button><button class="btn" data-a="stepSpeed" data-v="1" data-tip="20% faster">+</button></span></div>${slider(k)}`:'')+
+    `<div class="note" style="margin-top:8px">${head?`Tap ${lbl('R1')} to recenter. Hold ${lbl('R1')}: the stick has the camera, your head waits. ${lbl('R1')} + click R3 freezes the camera.`:on?`Hold ${lbl('R1')} and the right stick moves the camera. Let go and it snaps back. Click R3 while holding to lock.`:`${lbl('R1')} is an ordinary button.`}</div>`+
+    (on&&!head?H.note('While you look, the relay holds Left Alt. That can affect Windows shortcuts. It is always released.'):'')+
+    (S.mode!=='hotas'?H.note('Look only runs in HOTAS mode. This setting waits until you switch.'):'')+(head?H.btn('Head tracking settings','open','head'):H.btn('Head tracking setup','setup'))},
+  head(){if(!S.camera)return H.head('Head tracking')+H.note('Not set up yet. Your webcam tracks your head, and the camera in the game follows it.')+H.btn('Set up head tracking','setup','','acc');
+    return H.head('Head tracking')+
+    `<div class="note">${ready()&&S.look==='head'&&S.mode==='hotas'?uiStatus().L.word+'. '+uiStatus().L.sub+'.':'Off until Look is set to Head in HOTAS mode.'}</div>`+
+    H.lab('Head speed')+slider('headSpeed')+
+    `<div class="prow" style="margin-top:6px"><span>Turn (yaw)</span><span class="prow" style="gap:6px;font-size:12px;color:var(--text2)">Flip ${H.tgl('flipY',S.flipY)}</span></div>${slider('yaw')}`+
+    `<div class="prow" style="margin-top:6px"><span>Nod (pitch)</span><span class="prow" style="gap:6px;font-size:12px;color:var(--text2)">Flip ${H.tgl('flipP',S.flipP)}</span></div>${slider('pitch')}`+
+    H.lab('Still zone')+slider('dead')+H.note('The dot on the panel moves as you change these.')+
+    H.lab('Camera')+['Integrated Webcam','USB Camera','Virtual Camera'].map(c=>H.radio('camera',c,S.camera,c)).join('')+
+    H.lab('Camera mode')+['640x480 at 60 fps','640x480 at 30 fps','1280x720 at 30 fps'].map(c=>H.radio('camMode',c,S.camMode,c)).join('')+H.note('Applies when the camera next opens.')+
+    `<div class="pfoot">${H.btn('Recenter','center')}${H.btn('Run setup again','setup')}</div>`},
+  map(){const ch=S.map.filter((v,i)=>v!==DEFMAP[i]).length,E=S.edit&&S.edit.kind==='map'?S.edit:null;
+    if(!E)return H.head('Button map')+H.note('Which joystick button each pad button sends. Applies to the joystick in HOTAS mode, so your game\'s bind screen shows these numbers.')+
+      H.row(ch?ch+' changed':'All default','')+`<div class="pfoot">${H.btn('Change layout','editMap','','acc')}${H.btn('Reset to default','resetMap','','',ch?'':'disabled')}</div>`;
+    const ps=PADS[S.pad].ps,prompt=E.sel?`What should ${lbl(E.sel)} do? Press and hold the button whose job it takes, or click it.`:'Press and hold a button on your pad, or click it on the panel.';
+    return H.head('Button map')+`<div class="plabel">${prompt}</div>`+
+      (E.last?`<div class="note">${lbl(E.last.a)} now acts like ${lbl(E.last.b)}, and ${lbl(E.last.b)} like ${lbl(E.last.a)}. ${H.btn('Undo','undoMap','','sm')}</div>`:H.note('They swap, so nothing gets lost. Saved at once. Your game keeps getting input the whole time.'))+
+      (ps?'':H.note('Not on this controller: Touchpad, vJoy '+(S.map.indexOf('TP')+1)))+
+      `<div class="pfoot">${H.btn('Reset','resetMap')}<span style="display:flex;gap:8px">${H.btn('Cancel','cancelEdit')}${H.btn('Done','doneEdit','','acc')}</span></div>`},
+  game(){return H.head('Game')+(S.gamePath?`<div class="prow"><b style="font-weight:600">${esc(gameName())}</b></div>${H.note(esc(S.gamePath))}`:H.note('No game chosen yet.'))+
+    `<div class="pfoot">${H.btn('Change','chooseGame')}${H.btn(S.gameRunning?'Game running':'Launch','launch','',(S.gamePath&&!S.gameRunning&&ready())?'acc':'',(S.gamePath&&!S.gameRunning&&ready())?'':'disabled')}</div>`+H.note('Launch waits for Ready. The file picker is a normal Windows dialog, and input keeps flowing while it is open.')},
+  deck(){const armed=S.edit&&S.edit.kind==='discord',shared=S.discord.some(p=>S.toggle.includes(p));
+    return H.head('Deck and Discord')+H.row('Stream Deck control',H.tgl('pipe',S.pipe))+H.note('Applies next time the relay starts. Right now: '+(S.pipe?'pipe running.':'off.'))+H.hr+
+    H.lab('Discord mute button')+capField('discord',S.discord.length?S.discord.map(lbl).join(' + '):'None','','capDiscord',S.discord.length?'discordNone':'',false)+
+    (armed?H.note('Mock-up: click a button on the panel.'):shared?H.note('This shares the mode switch button, so pressing it also switches mode.','warn'):H.note('Sends a joystick button in Normal mode too, so Discord can bind it.'))},
+  updates(){const u=S.upd;
+    if(u)return H.head('Updates')+`<div class="plabel">${u.name}${u.pct!=null?' '+u.pct+'%':''}</div><div class="bar4"><b style="width:${u.total}%"></b></div>`+H.note('Input keeps flowing until the swap.');
+    return H.head('Updates')+H.row('Check for updates',H.tgl('updCheck',S.updCheck))+H.note('Only asks GitHub, once at start.')+H.row('Version',`<span class="slv">${S.version}</span>`)+
+    (S.update?`<div class="plabel">Version ${S.update} is ready</div>${H.note('Your settings stay as they are. The relay closes and reopens by itself.')}${S.gameRunning?H.note('Your game is running. Installing closes the relay, and your game loses its controller.','warn'):''}<div class="pfoot"><span></span>${H.btn('Install now','doUpdate','','acc')}</div>`:H.note(S.updDone?'Updated. You are on the latest version.':S.updCheck?'No update found.':'Update checks are off.'))},
+  app(){return H.head('App')+H.row('Start with Windows',H.tgl('autostart',S.autostart))+H.note('Starts quietly in the tray, through a scheduled task because the relay needs admin. Removed if you turn this off or uninstall.')+
+    H.row('Start in the tray',H.tgl('startTray',S.startTray))+H.note('Opening it by hand also starts with no window. The window still opens if something needs you.')+H.hr+
+    H.row('Show console',H.tgl('console',S.console))+H.note('The real 1.x console: the same screen and keys, alongside this window. Its close button is removed, because closing it would quit the relay.')+
+    H.row('Start in console mode',H.tgl('consoleMode',S.consoleMode))+H.note('Next start: console only, no window, no tray. Exactly how 1.x worked.')},
+  help(){return H.head('Help')+`<div class="plabel" style="margin-top:0">In flight</div><div class="keys"><b>Tap ${lbl('R1')}</b><span>Recenter (look straight ahead first)</span><b>Hold ${lbl('R1')}</b><span>The stick moves the camera, head paused</span><b>${lbl('R1')} + click R3</b><span>Freeze the camera, tap ${lbl('R1')} to release</span></div>`+
+    `<div class="plabel">Get unstuck</div><div class="note">Controller invisible after a crash? Run the relay with <code>--unhide</code>.</div><div class="note">Uninstall is console-only on purpose: <code>--uninstall</code>, with a restore point and one prompt. It shows on the Details tab too.</div>`+H.hr+H.note('Ruthless Controller Relay '+S.version+'. Uses vJoy, HidHide and ViGEmBus.')},
+  link(){const p=PADS[S.pad],st=uiStatus(),problems=[];
+    if(!ready())problems.push(st.take?st.take.sub:'Not connected.');
+    if(S.hide==='failed')problems.push('Your real pad is NOT hidden. Your game sees both. Unplug and reconnect it to retry.');
+    if(S.pad==='xboxw')problems.push("A wired Xbox pad can't be hidden from games.");
+    if(p.batt==='pct'&&S.batt<=15&&!S.charging)problems.push('Battery at '+S.batt+'%. The lightbar has turned red.');
+    return H.head('Link')+`<div class="keys"><b>Controller</b><span>${ready()?esc(p.full):'None'}</span><b>Connection</b><span>${ready()?esc(p.conn||'XInput'):'-'}</span><b>Battery</b><span>${ready()?(p.batt==='pct'?S.batt+'%':p.batt==='coarse'?'Medium':p.batt==='wired'?'Wired':'Not reported'):'-'}</span><b>Works here</b><span>${ready()?esc(p.caps):'-'}</span><b>Hidden</b><span>${ready()?(S.hide==='failed'||S.pad==='xboxw'?'No':'Yes'):'-'}</span></div>`+
+    (problems.length?H.hr+problems.map(x=>H.note(esc(x),'warn')).join(''):H.note('Nothing needs you.'))},
+  setup(){const u=S.setup,total=5;
+    const head=(t)=>`<div class="phead"><div class="ptitle" style="margin-left:4px">${t}</div><span class="pstep">Step ${u.step} of ${total}</span></div>`;
+    if(u.step===1)return head('Head tracking setup')+`<div class="plabel" style="margin-top:0">Your webcam tracks your head, and the camera in the game follows it.</div><div class="notice">NOTICE: this sends your head movement to the game as mouse movement from software. Anti-cheat that studies mouse input could treat that as suspicious. No bans are known, but nobody can promise that. Use it at your own risk.</div><div class="pfoot"><span></span><span style="display:flex;gap:8px">${H.btn('Cancel','setupCancel')}${H.btn('I understand','setupNext','','acc')}</span></div>`;
+    if(u.step===2)return head('Pick your camera')+['Integrated Webcam','USB Camera','Virtual Camera'].map(c=>H.radio('setupCam',c,u.cam,c)).join('')+H.note("It only turns on while your game runs, or during the test on the next page. The picture is never shown or stored.")+`<div class="pfoot"><span></span><span style="display:flex;gap:8px">${H.btn('Cancel','setupCancel')}${H.btn('Next','setupNext','','acc',u.cam?'':'disabled')}</span></div>`;
+    if(u.step===3)return head('Pick your game')+(S.gamePath?`<div class="plabel" style="margin-top:0">Head tracking runs in ${esc(gameName())}, and starts when it does.</div>`:`<div class="plabel" style="margin-top:0">Pick your game's .exe. Head tracking runs in it, and starts when it does.</div>`)+`<div class="pfoot">${H.btn(S.gamePath?'Change':'Choose','chooseGame')}${H.btn('Next','setupNext','','acc',S.gamePath?'':'disabled')}</div>`;
+    if(u.step===4)return head('Test it')+`<div class="plabel" style="margin-top:0">Turn your head. The dot on the panel should follow.</div><div class="prow"><span class="chip">${ic('cam',12)}Camera on</span>${H.btn('Center','center')}</div>`+H.row('Flip left and right',H.tgl('flipY',S.flipY))+H.row('Flip up and down',H.tgl('flipP',S.flipP))+H.note('No mouse movement is sent during this test. Your game is not touched.')+`<div class="pfoot">${H.btn('Skip','setupNext')}${H.btn('Next','setupNext','','acc')}</div>`;
+    return head('All set')+`<div class="plabel" style="margin-top:0">It starts with ${esc(gameName()||'your game')} in HOTAS mode.</div><div class="keys"><b>Tap ${lbl('R1')}</b><span>Recenter (look straight ahead first)</span><b>Hold ${lbl('R1')}</b><span>The stick moves the camera, head paused; let go to return</span><b>${lbl('R1')} + click R3</b><span>Freeze the camera; tap ${lbl('R1')} to release</span></div><div class="pfoot"><span></span>${H.btn('Turn on','setupDone','','acc')}</div>`}
+};
+function renderPop(){
+  const pop=$('#pop');pop.hidden=!S.pop;if(!S.pop){if(S.popInside){S.popInside=false;layout()}return}
+  const b=$('#pbody'),t=b.scrollTop;b.innerHTML=PAGES[S.pop]();b.scrollTop=t;placePop();
+}
+function openPop(page,fresh){if(page==='setup'&&!S.setup)return startSetup();S.quitAsk=false;if(fresh)S.stack=[];else if(S.pop&&S.pop!==page)S.stack.push(S.pop);S.pop=page;renderPop()}
+function closePop(){if(S.edit)cancelEdit();endCap();if(S.setup)setupCancel(true);S.pop=null;S.stack=[];renderPop()}
+function popBack(){if(S.edit)cancelEdit();endCap();const prev=S.stack.pop();if(prev){S.pop=prev;renderPop()}else if(S.pop==='rack')closePop();else{S.pop='rack';renderPop()}}
+function startSetup(){S.setup={step:1,cam:S.camera,restore:{look:S.look,camera:S.camera}};if(S.look==='head')S.look='off';S.stack=[];S.pop='setup';renderPop();renderStatus()}
+function setupCancel(silent){if(!S.setup)return;S.look=S.setup.restore.look;S.camera=S.setup.restore.camera;S.setup=null;S.test=false;S.stack=[];if(S.pop==='setup')S.pop=silent?null:'rack';renderPop();renderStatus()}
+
+/* ---------- Capture and pad-as-editor ---------- */
+let capTimer=null;
+function startCap(kind){endCap();S.capMsg='';S.cap={kind,left:10};capTimer=setInterval(()=>{if(!S.cap)return;S.cap.left--;if(S.cap.left<=0){endCap();if(S.edit&&S.edit.kind!=='map')cancelEdit();else renderPop()}else renderPop()},1000);renderPop()}
+function endCap(){clearInterval(capTimer);S.cap=null}
+function startEdit(kind){S.edit={kind,sel:null,picks:[],last:null,savedMap:S.map.slice(),savedToggle:S.toggle.slice(),savedDiscord:S.discord.slice()};if(kind==='toggle')S.toggle=[];if(kind!=='map')startCap(kind);renderPop();renderStatus()}
+function editHint(){return S.edit.kind==='map'?'#n is the number your game\'s bind screen shows.':'Your presses still reach the game.'}
+function cancelEdit(){if(!S.edit)return;const E=S.edit;clearTimeout(E.timer);S.map=E.savedMap;S.toggle=E.savedToggle;S.discord=E.savedDiscord;S.edit=null;endCap();renderPop();renderStatus()}
+function finishEdit(){const E=S.edit;if(!E)return;clearTimeout(E.timer);if(E.kind==='toggle'){if(E.picks.length)S.toggle=E.picks.slice();else S.toggle=E.savedToggle;note('Mode switch button: '+S.toggle.map(lbl).join(' + '))}if(E.kind==='discord'&&E.picks.length){S.discord=E.picks.slice();note('Discord button: '+S.discord.map(lbl).join(' + '))}S.edit=null;endCap();renderPop();renderStatus()}
+function editPick(ph){
+  const E=S.edit;if(E.kind==='map'){
+    if(!E.sel)E.sel=ph;else if(E.sel===ph)E.sel=null;else{const a=S.map.indexOf(E.sel),b=S.map.indexOf(ph);[S.map[a],S.map[b]]=[S.map[b],S.map[a]];E.last={a:E.sel,b:ph};note(lbl(E.sel)+' and '+lbl(ph)+' swapped');E.sel=null}
+  }else{
+    if(!E.picks.includes(ph))E.picks.push(ph);clearTimeout(E.timer);
+    if(E.kind==='discord'||E.picks.length>=2)E.timer=setTimeout(finishEdit,350);else E.timer=setTimeout(finishEdit,1200);
+    live.btn.add(ph);applyBtns();setTimeout(()=>{live.btn.delete(ph);applyBtns()},300);
+  }
+  renderTags();renderPop();
+}
+
+/* ---------- Tray ---------- */
+function trayText(){const st=uiStatus(),p=PADS[S.pad];if(S.card)return 'Relay '+S.version+': getting ready';if(!ready())return 'Relay '+S.version+': '+(st.take?st.take.word:'not ready');return 'Relay '+S.version+': '+st.m.word+', '+st.L.word+', '+p.name+(p.batt==='pct'?' '+S.batt+'%':'')}
+function renderTray(){
+  const c=barColor(),st=uiStatus(),grey=!ready()||S.card;
+  const pip=st.worst===2||S.card==='fatal'?'#E81123':st.worst===1||S.card==='reboot'?'#FCE100':null;
+  $('#trayi').innerHTML=S.running?`<svg width="20" height="20" viewBox="0 0 200 200" style="${grey?'filter:grayscale(1) brightness(.85)':''}"><use href="#hexb"/><circle cx="122" cy="78" r="17" fill="${c||'#8a8a8a'}"/>${pip?`<circle cx="166" cy="166" r="34" fill="${pip}" stroke="#000" stroke-width="8"/>`:''}</svg>`:'';
+  $('#trayi').dataset.tip=trayText();$('#trayi').style.visibility=S.running?'':'hidden';
+  const tw=$('#tbw');tw.hidden=!S.running||!S.winOpen;tw.classList.toggle('act',S.winOpen&&!S.minimized);
+  const s=uiStatus();tw.dataset.tip='Ruthless Controller Relay - '+(S.card?'Getting ready':s.m.word+', '+s.L.word+', '+(s.take?s.take.word:s.K.word)+(PADS[S.pad].batt==='pct'&&ready()?' '+S.batt+'%':''));
+  $('#win').hidden=!S.running||!S.winOpen||S.minimized;$('#gone').hidden=S.running;
+}
+function menuHTML(items){return items.filter(Boolean).map(i=>i.sep?'<div class="ms"></div>':`<div class="mi ${i.dis?'dis':''} ${i.bold?'bold':''}" ${i.a&&!i.dis?`data-a="${i.a}" data-v="${i.v||''}"`:''}><span class="mk">${i.check?ic('ok',12,1.5):i.radio?'<span style="width:6px;height:6px;border-radius:50%;background:currentColor"></span>':''}</span>${i.t}${i.sub?`<span class="ar">${ic('chev',10)}</span><div class="menu">${menuHTML(i.sub)}</div>`:''}</div>`).join('')}
+function openMenu(){
+  const items=[{t:trayText().replace(/^Relay [^:]+: /,''),dis:1},{sep:1},{t:'Open',bold:1,a:'trayOpen'},
+    {t:'Mode',sub:[{t:'HOTAS',radio:S.mode==='hotas',a:'setMode',v:'hotas'},{t:'Normal',radio:S.mode==='normal',a:'setMode',v:'normal'}]},
+    {t:'Look',sub:[{t:'Off',radio:S.look==='off',a:'setLook',v:'off'},{t:'Stick',radio:S.look==='stick',a:'setLook',v:'stick'},{t:'Head',radio:S.look==='head',a:'setLook',v:'head'}]},
+    {t:'Launch game',a:'launch',dis:!ready()||S.gameRunning||!S.gamePath},S.update&&{t:'Install update '+S.update,a:'open',v:'updates'},{sep:1},
+    {t:'Show console',check:S.console,a:'tgl',v:'console'},{t:'Start with Windows',check:S.autostart,a:'tgl',v:'autostart'},{sep:1},{t:'Quit the relay',a:'quit'}];
+  const m=$('#menu');m.innerHTML=menuHTML(items);m.hidden=false;m.style.right='12px';m.style.bottom='54px';
+}
+function closeMenu(){$('#menu').hidden=true}
+
+/* ---------- The console: the real 1.x dashboard, ported line for line from render_dashboard and render_waiting_screen. ---------- */
+function renderConsole(){
+  if(S.relay==='stalled')return; /* a frozen relay stops redrawing, so the console freezes too */
+  const p=PADS[S.pad],ps=p.ps,o=[];
+  const c=(cls,t)=>o.push(`<span class="${cls}">${esc(t)}</span>`),pad=(t,n)=>String(t).padEnd(n);
+  if(S.relay!=='ready'){
+    c('cw',`=== Ruthless Controller Relay v${S.version} -- vJoy device #2 ===\n\n`);
+    c('b-un',' NOT READY -- waiting for a controller...                              ');c('cn','\n');
+    if(S.relay==='dropped'){
+      c('cn','\nController disconnected. Turn it back on / reconnect it -- this will\npick it back up on its own, no need to restart.\n');
+      if(S.padKept)c('cn','Your game keeps its virtual controller while you wait -- no need to\nrestart the game either.\n');
+    }else c('cn','\nTurn on / connect any Xbox-style or PlayStation controller any time --\nthis keeps checking and will pick it up automatically, no restart needed.\n');
+    c('cn','\nDo NOT start your game until this screen changes to READY below.\n');
+    c('cd','\nOnce connected, press R to change the toggle hotkey/button, or G to\npick/launch your game.\n');
+    c('cd','\nHead tracking is ready, with nothing to install. Press H once connected.\n');
+    $('#conb').innerHTML=o.join('');return;
+  }
+  const hotas=S.mode==='hotas',normal=S.mode==='normal',headMode=S.look==='head',flOn=S.look!=='off';
+  const look=hotas?S.fl:'none';
+  const banner=look==='locked'?'b-lk':look==='looking'?'b-lo':hotas?'b-ho':normal?'b-no':'b-un';
+  const modeStr=look==='locked'?' >>> CAMERA LOCKED <<<  tap RB or click R3 to unlock + snap back      '
+    :look==='looking'?' >>> FREE LOOK <<<  let go of RB = snap back, click R3 = lock         '
+    :hotas?(flOn?' HOTAS MODE -- vJoy is live (hold RB to free look)                    ':' HOTAS MODE -- vJoy is live (game sees only the virtual stick)        ')
+    :normal?' NORMAL MODE -- virtual gamepad is live (game sees only that)         ':' MODE UNKNOWN -- press Ctrl+Alt+H once to set it                      ';
+  c('cw',`=== Ruthless Controller Relay v${S.version} -- vJoy device #2 ===`);
+  c('cy',S.update?`  UPDATE v${S.update}: press U to update  \n`:'\n');
+  c('cc','Controller: '+p.full+'\n');
+  if(p.batt==='pct')c(S.batt<=15?'cr':S.batt<=40?'cy':'cg',`Battery: ${S.batt}%${S.charging?' (charging)':''}\n`);
+  else if(p.batt==='coarse')c('cy','Battery: Medium\n');
+  else if(p.batt==='wired')c('cd','Battery: wired (no battery reading while plugged in)\n');
+  else c('cd','Battery: unknown\n');
+  c('cc','\n\n');
+  c('cg',' READY -- controller connected, you can start your game now.          \n\n');
+  if(headMode&&hotas&&look==='none')c(banner,pad(S.head==='tracking'||S.head==='paused'?` HOTAS -- HEAD TRACKING  tap RB = recenter  speed ${S.headSpeed} (+/-)`:' HOTAS -- HEAD TRACKING: waiting for your game (H = setup)',70));
+  else if(flOn&&hotas&&look==='none')c(banner,pad(` HOTAS MODE -- hold RB = free look   look speed ${S.flSpeed} (+/- to change)`,70));
+  else c(banner,modeStr);
+  c('cn','\n');
+  const combo=(S.toggle.length?S.toggle.map(k=>lbl(k)).join('+'):'None')+(S.toggle.length&&S.hold?` held ${S.hold}ms`:'');
+  c('cn',`\n${S.hotkey==='none'?'None':S.hotkey} or controller ${pad(combo,24)} toggles mode                    \nDo this BEFORE launching a game, not during.\n`);
+  c('cd','Press R to change the hotkey/button above live. Press M to fix/remap\nany vJoy button (see the grid below).\n');
+  c('cd',`Press G to ${S.gamePath?'launch your game.':"pick your game's exe (then launch it)."}\n`);
+  c('cd',`F: free look ${pad(headMode?'HEAD':flOn?'NORMAL':'OFF',6)}  H: head tracking setup  C: update check ${S.updCheck?'on':'off'}\n`);
+  c('cd',`Updates/sec: ${live.rate.toFixed(1).padStart(6)}\n\n`);
+  /* HEAD box beside the bars, same words as head_status() */
+  const st=!headMode||!hotas?'OFF':S.head==='waiting'||S.head==='noface'?'WAITING':look==='locked'?'LOCKED':look==='looking'?'RB: STICK':S.head==='paused'?'PAUSED':'TRACKING';
+  const dotted=st!=='OFF'&&st!=='WAITING';
+  const headRow=row=>{
+    if(row===0){let t=`+- HEAD: ${st} `;t=t.padEnd(22,'-')+'+';c(st==='TRACKING'?'cg':st==='OFF'?'cd':'cy','  '+t);return}
+    const line=Array(21).fill(' '),y=row-1;
+    if(y===2)line[10]='+';
+    if(dotted){const dx=10+Math.trunc(Math.trunc(live.hx)*10/100),dy=2+Math.trunc((Math.trunc(live.hy)*2+(live.hy<0?-50:50))/100);if(dy===y)line[dx]='O'}
+    const e=st==='OFF'?'cd':'cc';c(e,'  |');c('cy',line.join(''));c(e,'|');
+  };
+  const axis=(name,v,min,max,row)=>{
+    const n=clamp(Math.trunc((v-min)*20/(max-min)),0,20);
+    let b='';for(let i=0;i<21;i++)b+=i===n?'#':i===10?'|':'-';
+    c('cc',`  ${pad(name,3)} [`);c('cy',b);c('cc','] ');c('cw',String(Math.round(v)).padStart(6));headRow(row);c('cn','\n');
+  };
+  const st16=v=>clamp(v*327.67,-32768,32767),t8=v=>clamp(v*2.55,0,255);
+  axis('LX',st16(live.lx),-32768,32767,0);axis('LY',st16(live.ly),-32768,32767,1);axis('RX',st16(live.rx),-32768,32767,2);axis('RY',st16(live.ry),-32768,32767,3);
+  axis('LT',t8(live.lt),0,255,4);axis('RT',t8(live.rt),0,255,5);
+  /* button grid: real names, lit in the real colors, ">Name" when remapped */
+  const NAME=ps?{A:'Cross',B:'Circle',X:'Square',Y:'Triangle',L1:'L1',R1:'R1',View:'Share',Menu:'Options',L2:'L2 click',R2:'R2 click'}:{A:'A',B:'B',X:'X',Y:'Y',L1:'LB',R1:'RB',View:'Back',Menu:'Start',L2:'LT click',R2:'RT click'};
+  Object.assign(NAME,{L3:'L3',R3:'R3',Up:'D-Up',Down:'D-Down',Left:'D-Left',Right:'D-Right',Guide:'Guide',TP:'Touchpad'});
+  const FC={Triangle:'#3CDC5A',A:'#3CDC5A',Square:'#EB5ABE',X:'#468CEB',Cross:'#468CEB',Circle:'#EB4646',B:'#EB4646',Y:'#EBD23C'};
+  const btn=(label,on,key)=>{
+    const slot=S.map.indexOf(key),rm=slot>=0&&DEFMAP[slot]!==key?NAME[DEFMAP[slot]]:null;
+    const t=rm?(on?`[${label}>${rm}]`:` ${label}>${rm} `):(on?`[${label}]`:` ${label} `);
+    o.push(`<span class="${on?'cg':'cd'}"${on&&FC[label]?` style="color:${FC[label]}"`:''}>${esc(pad(t,20))}</span>`);
+  };
+  const has=k=>live.btn.has(k);
+  c('cn','\n  ');for(const k of ['A','B','X','Y','L1','R1'])btn(NAME[k],has(k),k);
+  c('cn','\n  ');for(const k of ['View','Menu','L3','R3'])btn(NAME[k],has(k),k);
+  c('cn','\n  ');for(const k of ['Up','Down','Left','Right'])btn(k,has(k),k);
+  c('cn','\n  ');btn(NAME.L2,t8(live.lt)>26,'L2');btn(NAME.R2,t8(live.rt)>26,'R2');
+  c('cn','\n  ');btn('PS',ps&&has('Guide'),'Guide');btn('Touchpad',has('TP'),'TP');
+  c('cn','\n\nPress M to fix/remap any button (incl. trigger clicks) live.\n');
+  const vps=S.vpad==='ds4';
+  c('cn',`Virtual gamepad looks like: ${pad(vps?'PlayStation':'Xbox',10)} Press V to switch to ${vps?'Xbox.':'PlayStation.'}\nPress Ctrl+C to stop.\n`);
+  /* INPUT / OUTPUT badge */
+  const L=ps?['bp','PS    ']:['bx','XBOX  '],R=vps?['bp','PS    ']:['bx','XBOX  '];
+  c('cn','\n');
+  c(L[0],' +--------+  ');c(R[0],'+--------+\n');
+  c(L[0],` | ${L[1]} |  `);c(R[0],`| ${R[1]} |\n`);
+  c(L[0],' +--------+  ');c(R[0],'+--------+\n');
+  c('cd','   INPUT               OUTPUT\n');
+  $('#conb').innerHTML=o.join('');
+}
+
+/* ---------- Scenes: the state switcher on the left ---------- */
+const BASE={relay:'ready',mode:'hotas',look:'off',fl:'none',head:'tracking',headWhy:'',hide:'ok',update:null,batt:72,charging:false,card:null,padKept:true,autoCycle:false,uacNo:false,gameRunning:false,gameStarting:false,hotkeyFailed:false};
+const SCENES={
+  waiting:{relay:'waiting',l:'Waiting for controller'},hotas:{l:'HOTAS'},normal:{mode:'normal',l:'Normal'},freelook:{look:'stick',autoCycle:true,gameRunning:true,l:'Free look'},
+  head:{look:'head',gameRunning:true,l:'Head tracking'},update:{look:'head',gameRunning:true,update:'2.0.1',l:'Update available'},
+  unset:{mode:'unset',l:'First run, mode not set'},locked:{look:'stick',fl:'locked',gameRunning:true,l:'Camera locked'},headwait:{look:'head',head:'waiting',headWhy:'Game not running',l:'Head waiting'},headfail:{look:'head',head:'waiting',headWhy:'Camera failed, retrying',gameRunning:true,l:'Camera failed'},
+  noface:{look:'head',head:'noface',gameRunning:true,l:'Face lost'},paused:{look:'head',head:'paused',gameRunning:true,l:'Head paused'},
+  dropped:{relay:'dropped',gameRunning:true,look:'head',l:'Pad dropped'},dropgone:{relay:'dropped',padKept:false,gameRunning:true,mode:'normal',l:'Pad dropped, game lost it'},nothidden:{hide:'failed',l:'Pad not hidden'},lowbatt:{batt:12,l:'Low battery'},two:{hide:'failed',batt:12,l:'Two problems (+1)'},stalled:{relay:'stalled',gameRunning:true,look:'head',l:'Relay not responding'},
+  welcome:{card:'welcome',relay:'waiting',l:'Welcome, before Windows asks'},uacno:{card:'welcome',uacNo:true,relay:'waiting',l:'Permission declined'},install:{l:'Installing drivers',fn:runInstall},reboot:{card:'reboot',relay:'waiting',l:'Restart needed'},fatal:{card:'fatal',relay:'waiting',l:'Fatal error'}
+};
+const GROUPS=[['Main states',['waiting','hotas','normal','freelook','head','update']],['Look',['locked','headwait','headfail','noface','paused']],['When something needs you',['dropped','dropgone','nothidden','lowbatt','two','stalled']],['First run and startup',['welcome','uacno','install','unset','reboot','fatal']]];
+function setScene(n){
+  const sc=SCENES[n];clearInterval(installTimer);clearTimeout(launchT);
+  if(S.edit)cancelEdit();endCap();if(S.setup)setupCancel(true);
+  S.scene=n;
+  const {l,fn,...over}=sc;Object.assign(S,BASE,over);
+  if(S.relay==='dropped')S.droppedAt=Date.now()-14000;
+  if(S.look==='head'&&!S.camera)S.camera='USB Camera';
+  S.tab=S.card?'telemetry':S.tab;
+  live.btn.clear();applyBtns();centerX=centerY=0;
+  note(sc.l);
+  if(fn){fn();return}
+  if(!S.winOpen||S.minimized){S.winOpen=true;S.minimized=false}
+  renderStatus();renderPop();
+}
+function buildCtl(){
+  const g=(t,k,opts,cur)=>`<h2>${t}</h2><div class="cs">${opts.map(([v,n])=>`<button class="cb" data-c="${k}" data-v="${v}">${n}</button>`).join('')}</div>`;
+  $('#ctl').innerHTML=`<div id="ctlt" data-c="ctlmin"><h1>Mock-up controls</h1><span>${ic('x',10)}</span></div>
+  <p>Not part of the app. The app has no theme or accent picker: it follows Windows.</p>
+  ${GROUPS.map(([t,ks])=>`<h2>${t}</h2><div class="cs">${ks.map(k=>`<button class="cb" data-c="scene" data-v="${k}">${SCENES[k].l}</button>`).join('')}</div>`).join('')}
+  ${g('Windows mode','theme',[['dark','Dark'],['light','Light']])}
+  ${g('Windows accent','accent',Object.entries(ACCENTS).map(([k,a])=>[k,a.n]))}
+  ${g('Window','focus',[['front','In front (acrylic)'],['behind','Behind a game (flat, worst case)']])}
+  ${g('Controller','pad',[['dualsense','DualSense USB'],['dualsensebt','DualSense BT'],['xbox','Xbox wireless'],['xboxw','Xbox wired']])}
+  ${g('Pad','sim',[['1','Moving'],['0','Hands off']])}
+  <h2>Try</h2><div class="cs"><button class="cb" data-a="openmenu">Tray menu</button><button class="cb" data-a="gear">Settings</button><button class="cb" data-c="bar">Bar layout</button></div>
+  <h2>What it costs</h2><div class="stat"><span>Instrument draws</span><span id="stFps">0 fps</span></div><div class="stat"><span>Source rate</span><span>Every change</span></div>
+  <p style="margin-top:6px">Hands off, or closed to the tray, and draws fall to 0. Drag the window's corner to resize. Below 286 tall it becomes the Bar.</p>`;
+}
+function renderCtlActive(){
+  const on={scene:S.scene,theme:S.theme,accent:S.accent,focus:S.focus,pad:S.pad,sim:S.simMove?'1':'0'};
+  $$('.cb[data-c]').forEach(b=>{if(on[b.dataset.c]!==undefined)b.classList.toggle('sel',on[b.dataset.c]===b.dataset.v)});
+}
+function applyTheme(){
+  const r=document.documentElement,a=ACCENTS[S.accent];r.dataset.theme=S.theme;r.dataset.focus=S.focus;
+  const dark=S.theme==='dark';r.style.setProperty('--acc',dark?a.d1:a.l4);r.style.setProperty('--acc-thin',dark?a.d0:a.l4);
+}
+
+/* ---------- Events ---------- */
+const STEP=dir=>{const k=S.look==='head'?'headSpeed':'flSpeed',c=SLIDERS[k],v=S[k],st=Math.max(1,Math.floor(v/5));S[k]=clamp(v+dir*st,c.min,c.max)};
+function flashMsg(m){const e=$('#dMsg');if(e){e.textContent=m;setTimeout(()=>{if(e.isConnected)e.textContent=''},1500);return}showTip(m,lastPointer.x,lastPointer.y);setTimeout(hideTip,1200)}
+function act(a,v,el){
+  switch(a){
+    case 'tab':S.tab=v;renderStatus();break;
+    case 'gear':if(S.pop){closePop()}else{openPop('rack',true)}break;
+    case 'open':closeMenu();if(!S.winOpen||S.minimized){S.winOpen=true;S.minimized=false;renderTray();layout()}openPop(v,!S.pop);break;
+    case 'back':popBack();break;
+    case 'setMode':S.mode=v;if(S.scene==='unset')S.scene='hotas';note('Mode: '+(v==='hotas'?'HOTAS':'Normal'));closeMenu();renderStatus();if(S.pop)renderPop();break;
+    case 'setLook':closeMenu();if(v==='head'&&!S.camera){if(!S.winOpen){S.winOpen=true;renderTray();layout()}startSetup();break}S.look=v;if(v==='head'){S.head=S.gameRunning?'tracking':'waiting';S.headWhy=S.gameRunning?'':'Game not running'}S.fl='none';live.btn.delete('R1');applyBtns();S.autoCycle=v==='stick';note('Look: '+v);renderStatus();if(S.pop)renderPop();break;
+    case 'seg':{const k=el.dataset.k;if(k==='mode'){act('setMode',v)}else if(k==='look'){act('setLook',v)}else if(k==='hold'){S.hold=+v;renderPop();renderStatus()}else if(k==='vpad'){S.vpad=v;note('Virtual pad: '+v);renderPop();renderStatus()}break}
+    case 'radio':{const k=el.dataset.k;if(k==='setupCam'){S.setup.cam=v}else{S[k]=v;note(k+': '+v)}renderPop();break}
+    case 'tgl':{closeMenu();S[v]=!S[v];if(v==='console'){$('#con').hidden=!S.console;if(S.console){const d=desk();const c=$('#con');c.style.left=(d.x0+24)+'px';c.style.top=Math.max(8,d.y1-720)+'px';renderConsole()}}if(v==='updCheck'||v==='pipe')renderStatus();renderPop();break}
+    case 'stepSpeed':STEP(+v);renderPop();renderStatus();break;
+    case 'launch':closeMenu();if(!S.gamePath){S.gamePath='D:\\Games\\game.exe';renderStatus();renderPop();break}if(!ready()||S.gameRunning)break;S.gameStarting=true;renderStatus();clearTimeout(launchT);launchT=setTimeout(()=>{S.gameStarting=false;S.gameRunning=true;if(S.head==='waiting'&&S.headWhy==='Game not running')S.head='tracking';note('Game launched');renderStatus();renderPop()},2000);break;
+    case 'chooseGame':S.gamePath=S.gamePath==='D:\\Games\\game.exe'?'C:\\Program Files\\Sim\\sim.exe':'D:\\Games\\game.exe';renderPop();renderStatus();break;
+    case 'capHotkey':startCap('hotkey');break;
+    case 'hotkeyNone':S.hotkey='none';renderPop();renderStatus();break;
+    case 'capToggle':startEdit('toggle');break;
+    case 'toggleNone':S.toggle=[];renderPop();renderStatus();break;
+    case 'capDiscord':startEdit('discord');break;
+    case 'discordNone':S.discord=[];renderPop();break;
+    case 'editMap':startEdit('map');break;
+    case 'resetMap':S.map=DEFMAP.slice();if(S.edit){S.edit.sel=null;S.edit.last=null}renderPop();renderStatus();break;
+    case 'undoMap':{const E=S.edit;if(E&&E.last){const a2=S.map.indexOf(E.last.a),b2=S.map.indexOf(E.last.b);[S.map[a2],S.map[b2]]=[S.map[b2],S.map[a2]];E.last=null;renderPop();renderTags()}break}
+    case 'cancelEdit':cancelEdit();break;
+    case 'doneEdit':finishEdit();break;
+    case 'setup':if(!S.setup)startSetup();break;
+    case 'setupNext':{const u=S.setup;if(u.step===2)S.camera=u.cam;u.step++;S.test=u.step===4;renderPop();renderStatus();break}
+    case 'setupCancel':setupCancel(false);break;
+    case 'setupDone':S.test=false;S.look='head';S.head=S.gameRunning?'tracking':'waiting';S.headWhy=S.gameRunning?'':'Game not running';if(S.mode!=='hotas')S.mode='hotas';S.setup=null;S.pop='rack';note('Head tracking on: '+S.camera);renderPop();renderStatus();break;
+    case 'center':centerX+=live.hx;centerY+=live.hy;break;
+    case 'doUpdate':runUpdate();break;
+    case 'xp':S.openXp=!S.openXp;renderStatus();break;
+    case 'flash':flashMsg(v);break;
+    case 'min':S.minimized=true;renderTray();break;
+    case 'max':if(!S.max)S.prevWr={...S.wr};else S.wr={...S.prevWr};S.max=!S.max;layout();break;
+    case 'close':if(S.pop)closePop();S.winOpen=false;renderTray();if(!S.balloonDone){S.balloonDone=true;const b=$('#balloon');b.hidden=false;setTimeout(()=>b.hidden=true,4200)}break;
+    case 'tbw':S.minimized=!S.minimized;renderTray();if(!S.minimized)layout();break;
+    case 'trayclick':closeMenu();if(!S.running)break;if(S.winOpen&&!S.minimized)act('close');else{S.winOpen=true;S.minimized=false;renderTray();layout()}break;
+    case 'trayOpen':closeMenu();S.winOpen=true;S.minimized=false;renderTray();layout();break;
+    case 'openmenu':openMenu();break;
+    case 'install':runInstall();break;
+    case 'quit':closeMenu();if(S.gameRunning&&S.running&&!S.card){S.winOpen=true;S.minimized=false;renderTray();layout();S.quitAsk=true;S.stack=[];S.pop='rack';renderPop();break}quitNow();break;
+    case 'quitNo':S.quitAsk=false;renderPop();break;
+    case 'quitYes':quitNow();break;
+    case 'restart':S.running=true;S.winOpen=true;S.minimized=false;setScene('hotas');layout();break;
+  }
+}
+function quitNow(){S.pop=null;S.stack=[];S.quitAsk=false;renderPop();S.console=false;$('#con').hidden=true;S.running=false;closeMenu();renderTray()}
+function runUpdate(){
+  const ph=[['Downloading',1],['Unpacking',0],['Testing the new version',0],['Swapping',0],['Restarting',0]];let i=0,pct=0;
+  S.upd={name:ph[0][0],pct:0,total:0};renderPop();
+  const t=setInterval(()=>{
+    pct+=9;if(i===0&&pct<100){S.upd={name:ph[0][0],pct,total:pct*.5};renderPop();return}
+    i++;if(i>=ph.length){clearInterval(t);S.version=S.update;S.update=null;S.upd=null;S.updDone=true;note('Updated to '+S.version);S.scene='head';renderStatus();renderPop();return}
+    S.upd={name:ph[i][0],pct:null,total:50+i*12};renderPop();
+  },220);
+}
+let suppressClick=false,lastPointer={x:0,y:0},launchT=null;
+document.addEventListener('click',e=>{
+  if(suppressClick){suppressClick=false;e.stopPropagation();e.preventDefault();return}
+  const c=e.target.closest('[data-c]');
+  if(c){const k=c.dataset.c,v=c.dataset.v;
+    if(k==='scene')setScene(v);
+    else if(k==='theme'){S.theme=v;applyTheme();renderStatus()}
+    else if(k==='accent'){S.accent=v;applyTheme();renderCtlActive()}
+    else if(k==='focus'){S.focus=v;applyTheme();renderCtlActive()}
+    else if(k==='pad'){S.pad=v;S.vpad=PADS[v].ps?'ds4':'x360';note('Connected: '+PADS[v].name);renderStatus();if(S.pop)renderPop()}
+    else if(k==='sim'){S.simMove=v==='1';renderCtlActive()}
+    else if(k==='bar'){if(S.wr.h<LAYOUT_MIN_H){S.wr.h=520;S.wr.w=760}else{S.max=false;S.wr.h=108;S.wr.w=Math.min(S.wr.w,560)}layout()}
+    else if(k==='ctlmin'){S.ctlMin=!S.ctlMin;$('#ctl').classList.toggle('min',S.ctlMin)}
+    return}
+  if(!e.target.closest('#menu,#trayi,[data-a=openmenu]'))closeMenu();
+  const el=e.target.closest('[data-a]');
+  if(el&&!el.disabled){act(el.dataset.a,el.dataset.v,el);return}
+  if(S.edit){const ph=e.target.closest('[data-phys]');if(ph){editPick(ph.dataset.phys);return}}
+  const o=e.target.closest('[data-open]');
+  if(o&&!S.edit){const pg=o.dataset.open;if(S.setup)return;S.pop=null;openPop(pg,true);return}
+  if(S.pop&&!e.target.closest('#pop')&&!S.edit&&!S.cap&&!S.setup)closePop();
+});
+document.addEventListener('input',e=>{
+  const k=e.target.dataset&&e.target.dataset.s;if(!k)return;const c=SLIDERS[k],raw=+e.target.value;
+  S[k]=c.log?c.min*Math.pow(c.max/c.min,raw/1000):raw;
+  e.target.style.setProperty('--p',pctOf(k,S[k]).toFixed(1)+'%');$('#v-'+k).textContent=c.fmt(S[k]);
+  if(k==='flSpeed'||k==='headSpeed')renderStatus();
+});
+addEventListener('keydown',e=>{
+  if(S.cap&&S.cap.kind==='hotkey'){e.preventDefault();
+    if(e.key==='Escape'){endCap();renderPop();return}
+    if(e.key==='Backspace'){if(S.toggle.length){S.hotkey='none';endCap();renderPop();renderStatus()}return}
+    if(['Control','Shift','Alt','Meta'].includes(e.key))return;
+    const mods=[e.ctrlKey&&'Ctrl',e.altKey&&'Alt',e.shiftKey&&'Shift',e.metaKey&&'Win'].filter(Boolean),key=e.key.length===1?e.key.toUpperCase():e.key;
+    if(!mods.length&&!/^F\d+$/.test(key)){S.capMsg='Add Ctrl, Alt, Shift or Win, or use an F key.';renderPop();return}
+    S.hotkey=[...mods,key].join('+');S.capMsg='';endCap();note('Hotkey: '+S.hotkey);renderPop();renderStatus();return}
+  if(e.key==='Escape'){if(!$('#menu').hidden)closeMenu();else if(S.edit)cancelEdit();else if(S.setup)setupCancel(false);else if(S.pop)popBack()}
+});
+/* Dragging and resizing */
+function startDrag(ev,onMove){
+  const sx=ev.clientX,sy=ev.clientY;let moved=false;
+  const mv=m=>{const dx=m.clientX-sx,dy=m.clientY-sy;if(!moved&&Math.hypot(dx,dy)<4)return;moved=true;onMove(dx,dy)};
+  const up=()=>{removeEventListener('pointermove',mv);removeEventListener('pointerup',up);if(moved)suppressClick=true;setTimeout(()=>{suppressClick=false},60)};
+  addEventListener('pointermove',mv);addEventListener('pointerup',up);
+}
+document.addEventListener('pointerdown',e=>{
+  const win=$('#win');
+  if(e.target.id==='grip'){const o={...S.wr};startDrag(e,(dx,dy)=>{S.max=false;S.wr.w=Math.max(420,o.w+dx);S.wr.h=Math.max(96,o.h+dy);layout()});return}
+  if(e.target.closest('#conh')){const c=$('#con'),l=c.offsetLeft,t=c.offsetTop;startDrag(e,(dx,dy)=>{c.style.left=(l+dx)+'px';c.style.top=(t+dy)+'px'});return}
+  const bar=win.classList.contains('isbar');
+  if((e.target.closest('#cap')&&!e.target.closest('button'))||(bar&&e.target.closest('#scene')&&!e.target.closest('button'))){
+    if(S.max)return;const o={...S.wr};startDrag(e,(dx,dy)=>{S.wr.x=o.x+dx;S.wr.y=o.y+dy;layout()});
+  }
+});
+$('#trayi').addEventListener('contextmenu',e=>{e.preventDefault();openMenu()});
+document.addEventListener('dblclick',e=>{if(e.target.closest('#cap')&&!e.target.closest('button'))act('max')});
+/* Tooltips: 0.5 s delay, drawn on paper */
+let tipT=null;
+function showTip(t,x,y){const tp=$('#tip');tp.textContent=t;tp.hidden=false;const r=tp.getBoundingClientRect();tp.style.left=clamp(x+12,4,innerWidth-r.width-4)+'px';tp.style.top=clamp(y+18,4,innerHeight-r.height-4)+'px'}
+function hideTip(){$('#tip').hidden=true}
+document.addEventListener('mouseover',e=>{const el=e.target.closest('[data-tip]');clearTimeout(tipT);hideTip();if(!el||!el.dataset.tip)return;const x=e.clientX,y=e.clientY;tipT=setTimeout(()=>showTip(el.dataset.tip,x,y),500)});
+document.addEventListener('mousemove',e=>{lastPointer={x:e.clientX,y:e.clientY}});
+document.addEventListener('mousedown',()=>{clearTimeout(tipT);hideTip()});
+addEventListener('resize',()=>{const d=desk();if(S.wr.x+80>d.x1)S.wr.x=Math.max(d.x0,d.x1-S.wr.w);layout()});
+setInterval(()=>{if(S.running&&S.relay==='dropped'&&S.winOpen)renderStatus()},1000);
+setInterval(()=>{if(S.tab==='details')tickDetails()},500);
+setInterval(()=>{const d=new Date();$('#clock').innerHTML=d.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})+'<br>'+d.toLocaleDateString()},20000);
+
+/* ---------- Start ---------- */
+buildScene();buildCtl();
+note('Drivers OK');note('Xbox pad connected. Hidden from games.');note("Game Bar's Guide capture off until you quit.");
+(function(){
+  /* Links like mockup.html#scene=head&theme=light&popup=rack open straight to a state */
+  const q=new URLSearchParams(location.hash.slice(1));
+  if(q.get('theme'))S.theme=q.get('theme');if(q.get('accent'))S.accent=q.get('accent');if(q.get('focus'))S.focus=q.get('focus');
+  if(q.get('pad')){S.pad=q.get('pad');S.vpad=PADS[S.pad].ps?'ds4':'x360'}
+  applyTheme();
+  if(innerWidth<900){S.ctlMin=true;$('#ctl').classList.add('min')}
+  initPlace();
+  setScene(q.get('scene')||'head');
+  if(q.get('tab')){S.tab=q.get('tab');renderStatus()}
+  layout();
+  if(q.get('popup'))openPop(q.get('popup'),true);
+  if(q.get('menu'))openMenu();
+  if(q.get('act'))act(q.get('act'),q.get('v'));
+  if(q.get('bar')){S.wr.h=108;S.wr.w=560;layout()}
+  const d=new Date();$('#clock').innerHTML=d.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})+'<br>'+d.toLocaleDateString();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

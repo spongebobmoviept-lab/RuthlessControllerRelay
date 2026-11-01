@@ -2035,7 +2035,7 @@ static void ui_page_head(void) {
         p_note(L"The head_tracker folder isn't next to the relay. It's in the full download.");
         return;
     }
-    p_note(L"Your webcam tracks your head, and the camera in the game follows it. This sends your head movement to the game as mouse movement from software. Anti-cheat that studies mouse input could treat that as suspicious. No bans are known, but nobody can promise that. Use it at your own risk.");
+    p_note(L"Your webcam tracks your head, and the camera in the game follows it. This sends your head movement to the game as mouse movement from software. Anti-cheat that studies mouse input could treat that as suspicious. One player using a head tracker has reported a ban for hacking, and the game studio's CEO said its detection may have seen it as inhuman mouse movement. There's no official rule or outcome yet, so nobody can promise it's safe. Use it at your own risk.");
     if (g_head_mode) ui_speed_row();
     swprintf(v, 64, L"%.2f", g_head_yaw < 0 ? -g_head_yaw : g_head_yaw);
     p_slider(L"Turn", (float)((g_head_yaw < 0 ? -g_head_yaw : g_head_yaw) / 3), v, P_YAW);

@@ -113,7 +113,7 @@ That said, this doesn't make the driver-presence concern below disappear — vJo
 
 Both are optional. **Free look** holds Left Alt and sends mouse movement while you hold RB. **Head tracking** holds Left Alt and sends mouse movement constantly while it's on and the game has the mouse. This is the same kind of input DS4Windows and Steam Input produce, and the movement comes from your real stick or your real head, not from anything aiming for you. Other head-tracking setups commonly drive the mouse the same way.
 
-Still, **some anti-cheat studies how players use the mouse and keyboard**, and software mouse movement mixed with joystick flying isn't what most players' input looks like. No bans from this are known, but nobody outside a game's developers can promise that, so it's your call. Turning free look off (`F`, or `freelook=off`) stops all of it. `--uninstall` isn't needed for that.
+Still, **some anti-cheat studies how players use the mouse and keyboard**, and software mouse movement mixed with joystick flying isn't what most players' input looks like. One player using a head tracker has reported a ban for hacking, and the game studio's CEO said its detection may have seen it as inhuman mouse movement. There's no official rule or outcome yet, so nobody can promise it's safe. It's your call. Turning free look off (`F`, or `freelook=off`) stops all of it. `--uninstall` isn't needed for that.
 
 ### The actual risk, scoped precisely
 

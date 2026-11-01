@@ -109,7 +109,7 @@ Status fields:
 | `chg` | `1` while charging |
 | `ctrl` | controller name. Always the **last** field and runs to the end of the line, since names can contain spaces |
 
-`input` fields: `lx ly rx ry` are the sticks (-32768..32767), `lt rt` the triggers (0..255), `btn` the XInput button bits, `ps` the PlayStation button (0/1). `hs` is head status: 0 off, 1 no tracker, 2 tracking, 3 paused, 4 RB: stick, 5 locked. `hx hy` are where the head points, -100..100, with positive being right and down on the HEAD box. Ignore them when `hs` is 0 or 1. The relay refreshes this sample about 15 times a second, so polling faster gains nothing. Polling `status` several times a second is fine.
+`input` fields: `lx ly rx ry` are the sticks (-32768..32767), `lt rt` the triggers (0..255), `btn` the XInput button bits, `ps` the PlayStation button (0/1). `hs` is head status: 0 off, 1 waiting, 2 tracking, 3 paused, 4 RB: stick, 5 locked. `hx hy` are where the head points, -100..100, with positive being right and down on the HEAD box. Ignore them when `hs` is 0 or 1. The relay refreshes this sample about 15 times a second, so polling faster gains nothing. Polling `status` several times a second is fine.
 
 Pad and free-look changes are applied a moment after the reply (between controller reads), so the status line in that reply may still show the old value. Send `status` again to see the change.
 

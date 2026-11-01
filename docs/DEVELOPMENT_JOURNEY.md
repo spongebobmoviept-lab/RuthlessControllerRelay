@@ -273,7 +273,7 @@ A 21st vJoy button was considered and rejected. Changing the device descriptor m
 
 Head tracking was first designed around the virtual joystick: spare look axes, bound in the game, with no mouse involved. In testing the axes moved correctly at 1000 reports a second, verified with a raw HID read, but the camera didn't follow, and turning on the game's absolute joystick look broke normal free look. Mouse movement through the game's own free look worked right away, so that's what shipped. The joystick route was removed instead of being left in as an untested option.
 
-The head tracker itself isn't in this project. opentrack reads the webcam and sends its result over UDP to localhost, and the relay is the only thing that talks to the game. It's all on its own thread, and neither the thread nor the socket exist until head tracking is first used, so the controller path isn't touched.
+At first the head tracker wasn't in this project: opentrack read the webcam and sent its result over UDP to localhost, and the relay was the only thing that talked to the game. It's all on its own threads, and none of them exist until head tracking is first used, so the controller path isn't touched.
 
 Things only real play found:
 
@@ -289,7 +289,17 @@ Things only real play found:
 
 v1.3.0 shipped opentrack's full installer: a 200 MB download, a 315 MB install, and settings left in the registry and Documents. That was the opposite of how the drivers here are handled, where the zip keeps only what's needed. v1.3.1 follows the imports from the exe and the three modules in use, and keeps those 39 files: 99 MB, unmodified, from a clean install of the official release. A `portable.txt` turns on opentrack's own portable mode, so its settings stay in its folder. Testing confirmed the registry and Documents didn't change, and the only new files were the two settings files setup writes.
 
-Going further would mean rewriting the tracker. The Qt window libraries are still there because `opentrack.exe` needs them, but replacing them risks the tracking feel that took real play to get right.
+That still left a separate program with a window and a tray icon, and it still wasn't how the other tools are used, so it didn't last.
+
+### Baking the tracker into the relay
+
+v1.4.0 ports the tracker to C, inside the relay, the way the relay already loads `ViGEmClient.dll`. Only Microsoft's ONNX Runtime and the model files stay outside. The code is `src/head_tracker.c`.
+
+**The first port was shaky, and the reason is worth keeping.** It followed opentrack's current code, but the feel had been tuned on its 2026.1.0 release, and the two differ. The newer code runs the pose network on the full-size picture. 2026.1.0 halves the picture until it's at most 640 wide, and cuts the head 5% larger. That sounds worse, but the softer picture carries less pixel noise, and the int8 model is very sensitive to it. Matching the release took frame-to-frame jitter from about 1 degree to about 0.35 on the same camera. **Port from the version that was actually tested, not the newest one.**
+
+It was checked against the real thing by saving camera frames and running them through both the C code and a reference built on real OpenCV: the whole-picture input came within 1/255, the head crop within 2/255, and the angles showed no bias. Then it was flown.
+
+Going through DirectShow, as the release does, also brought virtual cameras back: Media Foundation, tried first, can't see them. And the rule for the camera got simple once the relay owned it: on only while free look is head, the mode is HOTAS, and the chosen program is running.
 
 ### A fresh PC never had HidHide's tool
 

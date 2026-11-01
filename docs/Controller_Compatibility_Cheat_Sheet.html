@@ -29,7 +29,7 @@ footer { color: #666; font-size: 8.5pt; border-top: 1px solid #ccc; padding-top:
 </style></head><body>
 
 <h1>Ruthless Controller Relay — What Works Cheat Sheet</h1>
-<p class="sub">Plain-English guide: which controllers work, how well, and why. No tech knowledge needed. For version 1.3.1.</p>
+<p class="sub">Plain-English guide: which controllers work, how well, and why. No tech knowledge needed. For version 1.4.0.</p>
 
 <h2>The short version</h2>
 <div class="box blue"><b>Best experience: a USB cable for PlayStation controllers, a wireless dongle for Xbox controllers.</b> That way everything works: moving, buttons, vibration, and light color. Bluetooth works great for moving and buttons on every controller, but PlayStation controllers (DualSense / DualShock 4) lose vibration and light color over Bluetooth — see why below. This is not something wrong with your setup, it's true for everyone, everywhere.</div>
@@ -93,7 +93,7 @@ HOTAS mode is the main reason this program exists — and a wired Xbox controlle
 <table>
 <tr><th style="width:27%">HEAD box says</th><th>Meaning</th></tr>
 <tr><td><b>OFF</b></td><td>Head tracking is off, or you're in Normal mode. Switch to HOTAS mode. If the dashboard doesn't say "free look HEAD", press F.</td></tr>
-<tr><td><b>NO TRACKER</b></td><td>Nothing is arriving from the tracker. Normal until your game is running. If it's running, check that the opentrack folder is next to the program, then press H and pick your camera again.</td></tr>
+<tr><td><b>WAITING</b></td><td>Head tracking is on, but it isn't reading a head yet. Normal until your game is running. If it's running, face the camera, check that the head_tracker folder is next to the program, then press H and check your camera.</td></tr>
 <tr><td><b>TRACKING</b></td><td>Your head is moving the camera.</td></tr>
 <tr><td><b>PAUSED</b></td><td>The game you picked doesn't have the mouse: you're in a menu, in another program, or on another monitor. It comes back by itself.</td></tr>
 <tr><td><b>RB: STICK</b></td><td>You're holding RB, so the stick has the camera.</td></tr>
@@ -124,7 +124,7 @@ This is your green light — safe to start the game.</div>
 </ul>
 
 <h2>Something not working?</h2>
-<div class="box blue">Every run writes a plain-text log file next to the program (<b>driver_install_log.txt</b>). If anything looks wrong, that file has the details — send it along if you're asking for help troubleshooting. There's also an <b>Uninstall.bat</b> included that cleanly removes everything the program installed, if you ever want to fully undo it. Head tracking installs nothing: it lives in the opentrack folder beside the program, so deleting that folder removes it.</div>
+<div class="box blue">Every run writes a plain-text log file next to the program (<b>driver_install_log.txt</b>). If anything looks wrong, that file has the details — send it along if you're asking for help troubleshooting. There's also an <b>Uninstall.bat</b> included that cleanly removes everything the program installed, if you ever want to fully undo it. Head tracking installs nothing: it lives in the head_tracker folder beside the program, so deleting that folder removes it.</div>
 
-<footer>Ruthless Controller Relay — compatibility cheat sheet — for v1.3.1 — updated 2026-11-01</footer>
+<footer>Ruthless Controller Relay — compatibility cheat sheet — for v1.4.0 — updated 2026-11-01</footer>
 </body></html>

@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.4.0 — 2026-11-01
+
+### Changed
+- **Head tracking is built into the relay.** The tracker is now C code inside the relay, ported from opentrack 2026.1.0's NeuralNet tracker and Accela filter, with the same models, image steps and filter settings. There's no separate program, window, tray icon or local network port any more.
+- **The camera has one rule:** it's on only while free look is set to head, you're in HOTAS mode and the game you picked is running. Anything else, and it's off.
+- **Virtual cameras work,** such as OBS Virtual Camera and NVIDIA Broadcast. They only deliver video while their own apps run.
+- **The zip drops from about 47 MB to about 18 MB.** Its `head_tracker` folder holds only Microsoft's ONNX Runtime engine, the head models, and the Visual C++ runtime files the engine needs.
+- The HEAD box says WAITING instead of NO TRACKER, and the same on `hs=1` in the guides.
+
+### Removed
+- **opentrack.** With it go its window for tuning smoothing and curves, and support for TrackIR-style hardware and other trackers. [v1.3.1](../../releases/tag/v1.3.1) is still there if you need them.
+
+### Updating
+- **From v1.3.x with `U`:** the updater only replaces the programs, so get the [full zip](../../releases/latest) once to keep head tracking, then press `H` to pick your camera again. You can delete the old `opentrack` folder. If you installed opentrack with v1.3.0, it isn't needed any more, and you can uninstall it like any other program.
+
+### Build
+- Adds `src/head_tracker.c`, which `src/hotas_relay.c` includes, and the ONNX Runtime headers in `third_party/onnxruntime`. No longer links `ws2_32`. See [Building from source](README.md#building-from-source).
+
 ## v1.3.1 — 2026-11-01
 
 **Everyone on an older version should update.** If you update from v1.3.0 with `U`, get the [full zip](../../releases/latest) once for head tracking, because the updater only replaces the programs.

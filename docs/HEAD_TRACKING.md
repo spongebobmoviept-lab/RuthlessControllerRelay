@@ -7,7 +7,7 @@ Turn your head and the camera follows, with both hands still on the sticks. All 
 ## What you need
 
 - **A webcam** that can see your face. A phone or an HDMI camera works too, if Windows sees it as a camera.
-- **opentrack**, which does the actual face tracking. A trimmed copy comes with the relay, in its `opentrack` folder. There's nothing to install.
+- **Nothing else.** The tracker is built into the relay. Its engine and head model are in the `head_tracker` folder in the zip, so keep that folder next to the relay. There's nothing to install.
 - **A game where holding Left Alt and moving the mouse is free look.** It's the same requirement as [free look](../README.md#free-look-hotas-mode).
 
 ## Setup
@@ -42,14 +42,14 @@ On a PlayStation controller, `RB` is `R1`.
 | `+` / `-` | Head speed (saved automatically) |
 | `H` | Run setup again, to switch cameras or games |
 
-Head tracking only runs in **HOTAS mode**. In Normal mode the camera stops following, and comes back when you switch to HOTAS mode. opentrack and the webcam keep running, so press `F` to close them.
+Head tracking only runs in **HOTAS mode**. In Normal mode the camera turns off, and comes back when you switch to HOTAS mode.
 
 ## What the HEAD box says
 
 | Word | Meaning |
 |---|---|
 | **OFF** | Head tracking is off, or you're in Normal mode. In Normal mode, switch to HOTAS mode. If the dashboard doesn't say `free look HEAD`, press `F` |
-| **NO TRACKER** | Nothing is arriving from opentrack. Normal until the game is running. If the game is running, see below |
+| **WAITING** | Head tracking is on, but it isn't reading a head yet. Normal until your game is running. The camera takes a moment to start, and tracking begins once it sees your face. If it stays this way, see below |
 | **TRACKING** | Your head is moving the camera |
 | **PAUSED** | The game you picked doesn't have the mouse right now: you're in a menu, in another program, or your cursor is on another monitor. It comes back by itself |
 | **RB: STICK** | You're holding RB, so the stick has the camera |
@@ -69,7 +69,7 @@ So it stays out of your way on your desktop, on another monitor and in menus lik
 
 | Problem | Try |
 |---|---|
-| Stuck on **NO TRACKER** with the game running | Check that the `opentrack` folder is next to the relay. Press `H` and pick your camera again. Make sure no other program is using the camera. A camera can usually only be used by one program at a time |
+| Stuck on **WAITING** with the game running | Face the camera, because tracking starts when it first sees your face. Check that the `head_tracker` folder is next to the relay. Press `H` and check the camera and program. Make sure no other program is using the camera: a camera can usually only be used by one program at a time. A virtual camera also needs its own app running |
 | Stuck on **PAUSED** while you're playing | Setup may have the wrong `.exe`. Some games start from a launcher and then run as a different program, which Task Manager's Details tab shows while you play. Press `H`, then `G` and pick that one. In Unreal Engine games it usually ends in `-Win64-Shipping.exe`. A game that keeps the mouse cursor showing while you play stays on PAUSED too |
 | **TRACKING**, but the camera doesn't move | Check your game's free look setting. It was tested with vehicle free look set to on by default. Also check that Left Alt + mouse is free look in your game |
 | Up/down is backwards | Set `head_pitch=-1` in `ruthless_controller_relay.ini` (close the relay first) |
@@ -91,22 +91,24 @@ These live in `ruthless_controller_relay.ini`, next to the relay. Close the rela
 | `head_yaw` | Multiplies left/right. `0` turns it off, negative flips it | `1.00` |
 | `head_pitch` | Multiplies up/down. `0` turns it off, negative flips it | `1.00` |
 | `head_deadzone` | Head wobble smaller than this many degrees is ignored | `0.15` |
-| `game_path` | The program head tracking runs in. Change it with `H` rather than by hand, so opentrack learns about it too | none |
+| `game_path` | The program head tracking runs in. Set it with `H` | none |
+| `head_camera` | The camera to use. Set it with `H` | none |
+| `head_width`, `head_height`, `head_fps` | The video mode to ask the camera for, or the closest it has | `640`, `480`, `60` |
 
-## Fine tuning in opentrack
+## Cameras
 
-Setup makes an opentrack profile called `relay-head.ini`, and opentrack sits in your system tray while head mode is on. Open it from there to see your camera and change smoothing and curves. Its **output must stay on "UDP over network", 127.0.0.1, port 4242**, because that's how it reaches the relay. Running setup again only changes the camera and keeps the rest of what you tuned.
+Anything Windows offers as a camera works, virtual ones like OBS Virtual Camera and NVIDIA Broadcast included. A virtual camera only delivers video while its own app is running. If a camera stops sending video, tracking stops, and the relay tries it again every 10 seconds.
 
-The copy here only has the webcam tracker. To use TrackIR-style hardware or a Tobii, install the [full opentrack](https://github.com/opentrack/opentrack/releases), set it to that same output, and open it before you turn head tracking on. The relay uses an opentrack that's already running and leaves it alone.
+The tracker shrinks a larger picture to at most 640 wide before reading it, so a higher resolution doesn't make tracking sharper.
 
-The tracker uses real CPU while it runs: 1.5 to 3 cores in testing on an 8-core desktop CPU. In `off` or `normal`, opentrack is closed and the webcam is off. In `head`, opentrack sits in your system tray, and the webcam comes on when your game starts.
+The tracker uses real CPU while it runs: about 1.6 cores for the whole relay in testing on an 8-core desktop CPU. The camera is off with no game running, in Normal mode, and in `off` or `normal`.
 
 ## How it works
 
-Your webcam goes to opentrack, which works out where your head is pointing and sends that to the relay on your own PC only. The relay is the only thing that talks to the game, and it turns your head movement into mouse movement while Left Alt is held, the same route as [free look](../README.md#free-look-hotas-mode). It runs on its own thread, so the path from your controller to the game isn't touched. If the relay started opentrack, it closes with the relay. One you started yourself is left alone. Left Alt is released either way.
+Your webcam goes to a tracker inside the relay, which works out where your head is pointing. The picture stays inside the relay and is never saved or sent anywhere. The relay turns your head movement into mouse movement while Left Alt is held, the same route as [free look](../README.md#free-look-hotas-mode). The tracker runs on its own threads, so the path from your controller to the game isn't touched. If you close the relay, the camera closes with it and Left Alt is released. The method is opentrack's, ported to C: see [Credits](../README.md#credits).
 
 ## Removing it
 
 Set free look to off or normal with `F`, and nothing runs.
 
-Nothing was ever installed. opentrack and all its settings live in the `opentrack` folder beside the relay, and nothing goes in the registry or your Documents, so deleting that folder removes it completely. If you also have the full opentrack installed, the relay doesn't touch it.
+Nothing was ever installed, and nothing goes in the registry or your Documents. Delete the `head_tracker` folder and head tracking is gone.

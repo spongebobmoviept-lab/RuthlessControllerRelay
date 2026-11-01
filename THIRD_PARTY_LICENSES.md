@@ -1,18 +1,18 @@
 # Third-party licenses and credit
 
-This project would not exist without five pieces of engineering built and maintained by other people: vJoy, HidHide, ViGEmBus, ViGEmClient and opentrack. The first four were verified as of 2026-09 to carry permissive licenses that explicitly allow redistribution, including in binary form, provided the copyright notice and license text travel with them. That's exactly what this file is for. If you redistribute this project, keep this file (or at minimum, the notices below) intact.
+This project would not exist without engineering built and maintained by other people: vJoy, HidHide, ViGEmBus, ViGEmClient, opentrack and ONNX Runtime. All carry permissive licenses that explicitly allow redistribution, including in binary form, provided the copyright notice and license text travel with them. That's exactly what this file is for. If you redistribute this project, keep this file (or at minimum, the notices below) intact.
 
 This project is genuinely a small addition on top of the real work below — a thin layer of input relaying and UI glued on top of driver-level engineering that took each of these authors far more effort than anything in this repository. Please give them the credit.
 
 ---
 
-## opentrack — head tracking
+## opentrack — the head tracking method
 
 **Repository:** https://github.com/opentrack/opentrack
-**Authors:** Stanislaw Halik and contributors
-**License:** ISC for almost all of its code, per its own README, with a few dependencies under their own terms. Full details: [OPENTRACK-LICENSING.txt](https://github.com/opentrack/opentrack/blob/master/OPENTRACK-LICENSING.txt) and its `3rdparty-notices` folder.
+**Authors:** Stanislaw Halik and contributors; NeuralNet tracker by Michael Welter
+**License:** ISC. Full details: [OPENTRACK-LICENSING.txt](https://github.com/opentrack/opentrack/blob/master/OPENTRACK-LICENSING.txt)
 
-opentrack reads the webcam and works out where your head is pointing. That part is its NeuralNet tracker, by Michael Welter (same ISC license), which runs on [ONNX Runtime](https://github.com/microsoft/onnxruntime) (MIT). opentrack also uses [OpenCV](https://github.com/opencv/opencv) and [Qt](https://www.qt.io/) under their own licenses. The release zip includes a **trimmed copy** in its `opentrack` folder: unmodified files from the official 2026.1.0 installer, keeping only the webcam tracker, the Accela filter, the UDP output and what those need. That leaves out the optional parts of the installer that carry their own terms. The notices for what is included, and opentrack's warranty terms, are in that folder's `doc`. This project contains none of opentrack's source code. It writes opentrack's settings in that folder, starts and stops it, and reads its documented UDP output. The full installer and the source are at [opentrack's releases](https://github.com/opentrack/opentrack/releases/tag/opentrack-2026.1.0).
+`src/head_tracker.c` is a C port of opentrack 2026.1.0's NeuralNet tracker, its Accela filter, and the parts of its pipeline they use. The model files in the zip's `head_tracker` folder come unmodified from its official installer.
 
 ```
 Copyright (c) 2012-2016 Stanislaw Halik
@@ -20,6 +20,51 @@ Copyright (c) 2012-2016 Stanislaw Halik
 Permission to use, copy, modify, and/or distribute this software for any
 purpose with or without fee is hereby granted, provided that the above
 copyright notice and this permission notice appear in all copies.
+```
+
+```
+Copyright (c) 2021 Michael Welter <michael@welter-4d.de>
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+```
+
+---
+
+## ONNX Runtime — runs the head tracker's neural network
+
+**Repository:** https://github.com/microsoft/onnxruntime
+**Author:** Microsoft
+**License:** MIT
+
+The zip's `head_tracker` folder includes `onnxruntime.dll`, unmodified, along with the Visual C++ runtime files it needs, which are Microsoft's redistributable files. `third_party/onnxruntime` has its C headers.
+
+```
+The neuralnet tracker uses the ONNX library.
+See: <https://github.com/microsoft/onnxruntime>
+
+MIT License
+
+Copyright (c) Microsoft Corporation
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 ```
 
 ---

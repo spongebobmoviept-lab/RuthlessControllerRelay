@@ -37,8 +37,7 @@ This tool sits between your real controller and every game on the system. Solid 
 ```mermaid
 flowchart LR
     C["🎮 Real controller<br/>(PS4 / PS5 / Xbox,<br/>wired or wireless)"] --> R["Ruthless Controller Relay"]
-    W["📷 Webcam"] -.-> O["opentrack<br/>(finds your head)"]
-    O -. "where your head points" .-> R
+    W["📷 Webcam"] -. "where your head points,<br/>worked out inside the relay" .-> R
     K["Stream Deck, macro pad<br/>or script"] -. "mode, pad type, free look,<br/>status back" .-> R
 
     R -- "hides the real controller from<br/>everything except itself" --> H["HidHide"]
@@ -57,7 +56,6 @@ flowchart LR
     style V fill:#1a7a3c,stroke:#0e4d24,color:#fff
     style G fill:#a3231a,stroke:#6e160f,color:#fff
     style W fill:#2b2b2b,stroke:#888,color:#fff
-    style O fill:#7a4d9e,stroke:#54336e,color:#fff
     style K fill:#2b2b2b,stroke:#888,color:#fff
     style D fill:#5865F2,stroke:#3b45b5,color:#fff
 ```
@@ -68,7 +66,7 @@ Once you pick a mode, only one virtual device is live — the other is present b
 
 <p align="center"><sub>The live dashboard — real-time axis/button state, current mode, and what the game sees vs. what's actually plugged in.</sub></p>
 
-All the driver and tracking work is done by other people's projects: **[vJoy](https://github.com/shauleiz/vJoy)**, **[ViGEmBus](https://github.com/nefarius/ViGEmBus)**, **[HidHide](https://github.com/nefarius/HidHide)** and **[opentrack](https://github.com/opentrack/opentrack)**. See [Credits](#credits) for who made what and why each one is used.
+All the driver work is done by other people's projects: **[vJoy](https://github.com/shauleiz/vJoy)**, **[ViGEmBus](https://github.com/nefarius/ViGEmBus)** and **[HidHide](https://github.com/nefarius/HidHide)**. Head tracking is a C port of **[opentrack](https://github.com/opentrack/opentrack)**'s tracker, running on Microsoft's **[ONNX Runtime](https://github.com/microsoft/onnxruntime)**. See [Credits](#credits) for who made what and why each one is used.
 
 ## What's new
 
@@ -78,7 +76,7 @@ All the driver and tracking work is done by other people's projects: **[vJoy](ht
 - **A dot shows where you're pointing,** right in the relay window, with no extra windows.
 - **`RB` in head tracking:** tap to recenter; hold to look around with the stick, even behind you.
 - **Automatic update check.** The relay tells you when there's a new version and asks before installing it. Press `C` to turn it off.
-- **Nothing to install for head tracking (v1.3.1).** A trimmed copy of opentrack runs from a folder beside the relay. It opens and closes with head tracking, keeps its settings in that folder, and leaves nothing behind.
+- **Head tracking is built into the relay (v1.4.0).** No separate program, window or tray icon, and nothing to install. The camera is only on while your game is running in HOTAS mode. Virtual cameras like OBS and NVIDIA Broadcast work.
 - **Fresh-PC fix (v1.3.1).** On a PC that got HidHide from the relay rather than from HidHide's own installer, the real controller could stay visible to games. Fixed. Everyone on an older version should update.
 
 ## Versions and what's different
@@ -87,7 +85,8 @@ Every published version stays up on the **[Releases page](../../releases)**, so 
 
 | Version | Released | What's different |
 |---|---|---|
-| **[v1.3.1](../../releases/tag/v1.3.1)** (latest) | 2026-11-01 | Head tracking needs no install: a trimmed opentrack runs from a folder beside the relay and leaves nothing behind, and the zip drops to about 47 MB. Fixes hiding the real controller on a fresh PC. The SAFE build no longer shows keys it doesn't have. Rewritten home page and cheat sheet |
+| **[v1.4.0](../../releases/tag/v1.4.0)** (latest) | 2026-11-01 | Head tracking is built into the relay, written in C, with no opentrack: no extra program, window or tray icon. The camera is only on while your game runs in HOTAS mode, virtual cameras work, and the zip drops to about 18 MB. opentrack's window for tuning, and TrackIR-style hardware, are gone |
+| **[v1.3.1](../../releases/tag/v1.3.1)** | 2026-11-01 | Head tracking needs no install: a trimmed opentrack runs from a folder beside the relay. Fixes hiding the real controller on a fresh PC. The SAFE build no longer shows keys it doesn't have. Rewritten home page and cheat sheet |
 | **[v1.3.0](../../releases/tag/v1.3.0)** | 2026-11-01 | Head tracking with any webcam, the HEAD box, a GitHub update check you can turn off, and opening the relay twice now brings up the first one. Comes with opentrack's full installer, so the zip is about 190 MB. Has the fresh-PC bug that v1.3.1 fixes |
 | **[v1.2.0](../../releases/tag/v1.2.0)** | 2026-10-05 | Stream Deck, macro-pad and script control. A controller button for Discord mute in Normal mode |
 | **[v1.1.0](../../releases/tag/v1.1.0)** | 2026-10-02 | Free look in HOTAS mode: hold RB to look, RB + R3 to lock. Steadier virtual joystick. A small stick dead zone in Normal mode |
@@ -98,7 +97,7 @@ Every change in detail: **[CHANGELOG.md](CHANGELOG.md)**.
 
 ## Quick start
 
-1. Download the [latest release](../../releases/latest) and unzip it, or [build it yourself](#building-from-source). The zip has everything: the relay, its drivers, and the parts of opentrack that head tracking needs.
+1. Download the [latest release](../../releases/latest) and unzip it, or [build it yourself](#building-from-source). The zip has everything: the relay, its drivers, and what head tracking needs.
 2. **Using Steam?** [Disable Steam Input](docs/KNOWN_LIMITATIONS.md#steam-input-must-be-disabled) for the game first.
 3. Run `RuthlessControllerRelay.exe`. On first run it self-installs vJoy/HidHide/ViGEmBus if they aren't already present (see [how and why](docs/DEVELOPMENT_JOURNEY.md#core-architecture)).
 4. Connect a controller — the dashboard shows what it detected and what it's currently presenting to games.
@@ -160,9 +159,9 @@ Added in v1.3.0. Turn your head and the camera follows, with both hands still on
 
 <p align="center"><img src="docs/images/head-tracking-setup.png" alt="The head tracking setup screen in the relay window: an anti-cheat notice, a list of cameras, the program it runs in, and the controls" width="600"></p>
 
-Nothing gets installed. opentrack runs from a folder beside the relay, opens and closes with head tracking, and keeps its settings in that folder, so nothing goes in the registry or your Documents.
+It's built into the relay, so there's nothing to install and no other program or window. It opens your camera only while free look is set to head, you're in HOTAS mode and your game is running, and lets go of it as soon as any of that stops.
 
-It only moves the mouse while you're in HOTAS mode and the game you picked has the mouse, so it leaves your desktop, other programs and in-game menus alone. The webcam is only on while free look is set to head and your game is running, including in Normal mode.
+It only moves the mouse while you're in HOTAS mode and the game you picked has the mouse, so it leaves your desktop, other programs and in-game menus alone.
 
 **Anti-cheat notice:** this sends your head movement to the game as software mouse movement, constantly, and some anti-cheat studies mouse input. No bans are known, but no one can promise that. Use it at your own risk.
 
@@ -197,7 +196,6 @@ Separate from the relay, and the relay doesn't need it. A small plugin for the [
 
 ## What's coming next
 
-- **Head tracking built into the relay.** In progress, with no date yet: a tracker written in C that runs inside the relay, so there's no opentrack folder at all.
 - **Joystick force feedback** (DualSense HD haptics) is an open idea with no date. See [issue #10](https://github.com/spongebobmoviept-lab/RuthlessControllerRelay/issues/10).
 - Ideas and requests are welcome in [Issues](../../issues).
 
@@ -223,7 +221,7 @@ Yes, for the overwhelming majority of games and use cases. vJoy/ViGEmBus/HidHide
 - **Software mouse movement:** free look and head tracking, both optional, send it to the game. [Notice](docs/KNOWN_LIMITATIONS.md#free-look-and-head-tracking-send-software-input).
 - **Kernel-level anti-cheat:** the one confirmed driver problem. Some competitive multiplayer games block driver-level tools like this regardless of intent. There's one confirmed case, not a general pattern. Full detail, including exactly what's confirmed vs. uncertain: **[Known Limitations § Anti-cheat](docs/KNOWN_LIMITATIONS.md#anti-cheat)**.
 - **The internet:** the relay only goes online for the update check (`C` turns it off) and an update you approve, both to GitHub over HTTPS. Updates have no signature check of their own. They trust this GitHub repo, the same as downloading by hand.
-- **Your webcam:** the relay never sees the picture. opentrack reads the camera and sends only head angles, on your own PC.
+- **Your webcam:** the picture stays inside the relay. It's never saved or sent anywhere, and the camera is only on while head tracking is running.
 
 ## Building from source
 
@@ -238,10 +236,10 @@ zig cc -target x86_64-windows-gnu -O2 -Wall -Wextra \
     -I third_party -I third_party/vigem_client \
     -o RuthlessControllerRelay.exe \
     src/hotas_relay.c resources/hotas_relay_manifest.res \
-    -ldinput8 -ldxguid -lole32 -loleaut32 -lcomdlg32 -ladvapi32 -lshell32 -lsetupapi -lnewdev -lhid -lcfgmgr32 -lws2_32 -lwinhttp
+    -ldinput8 -ldxguid -lole32 -loleaut32 -lcomdlg32 -ladvapi32 -lshell32 -lsetupapi -lnewdev -lhid -lcfgmgr32 -lwinhttp
 ```
 
-Copy `third_party/vigem_client/ViGEmClient.dll` next to the built exe, and copy `third_party/drivers` beside it as a folder named `drivers`. For a fresh PC, add `HidHideCLI.exe` to `drivers/hidhide`: it isn't in this repo, but it's in the release zip and HidHide's own install. For head tracking, copy the `opentrack` folder from the release zip there too. See [docs/DEVELOPMENT_JOURNEY.md](docs/DEVELOPMENT_JOURNEY.md) for exactly why the driver payload is structured this way instead of shelling out to each vendor's own GUI installer.
+Copy `third_party/vigem_client/ViGEmClient.dll` next to the built exe, and copy `third_party/drivers` beside it as a folder named `drivers`. For a fresh PC, add `HidHideCLI.exe` to `drivers/hidhide`: it isn't in this repo, but it's in the release zip and HidHide's own install. For head tracking, copy the `head_tracker` folder from the release zip there too. See [docs/DEVELOPMENT_JOURNEY.md](docs/DEVELOPMENT_JOURNEY.md) for exactly why the driver payload is structured this way instead of shelling out to each vendor's own GUI installer.
 
 `RelayControl.exe`, the small helper for Stream Deck buttons and scripts, is a separate program:
 ```sh
@@ -277,11 +275,10 @@ This project is a thin layer of glue on top of other people's engineering. They 
 | **[vJoy](https://github.com/shauleiz/vJoy)** | Shaul Eizikovich | The virtual joystick HOTAS mode is built on | Games that bind a joystick need a real joystick device. vJoy is the long-standing free way to make one, and flight-sim players have relied on it for years |
 | **[ViGEmBus](https://github.com/nefarius/ViGEmBus)** / **[ViGEmClient](https://github.com/nefarius/ViGEmClient)** | Benjamin Höglinger-Stelzer ([Nefarius](https://nefarius.at/)) | The virtual Xbox or DualShock pad in Normal mode | Games accept it as a real pad, and DS4Windows runs on the same foundation. Its repo is archived now, but the signed driver still works |
 | **[HidHide](https://github.com/nefarius/HidHide)** | Eric Korff de Gidts, Benjamin Höglinger-Stelzer (Nefarius) | Hides the real controller, so games only ever see one device | Without it, a game sees the real and virtual controllers together and gets double input. It hides the real one from everything except the relay, with nothing to unplug |
-| **[opentrack](https://github.com/opentrack/opentrack)** | Stanislaw Halik and contributors | Head tracking. The zip has a trimmed copy with only the parts below, files unmodified, and nothing gets installed | Free, open source and works with an ordinary webcam. It sends its result over a local port, so the relay needs none of its code and the heavy camera work stays off your controller's path. Its portable mode keeps everything in one folder, so it leaves nothing behind. The full version also takes TrackIR-style hardware |
-| **[NeuralNet tracker](https://github.com/opentrack/opentrack/tree/master/tracker-neuralnet)** | Michael Welter | The part of opentrack that finds your head in the webcam picture | It only needs your face. No markers, clips or IR lights |
-| **Accela filter** | Stanislaw Halik | The part of opentrack that smooths the result | It steadies small shakes and keeps quick head turns quick |
-
-opentrack in turn is built on [ONNX Runtime](https://github.com/microsoft/onnxruntime) (runs the tracker's neural network), [OpenCV](https://github.com/opencv/opencv) (reads the camera) and [Qt](https://www.qt.io/) (its window). The parts it needs are in that folder too.
+| **[opentrack](https://github.com/opentrack/opentrack)** | Stanislaw Halik and contributors | The head tracking method. Its code was ported to C for this project | Free, open source, and works with an ordinary webcam. Porting it, rather than running it, means no extra program, window or settings left behind |
+| **[NeuralNet tracker](https://github.com/opentrack/opentrack/tree/master/tracker-neuralnet)** | Michael Welter | Finds your head in the webcam picture. Ported to C, and its trained model files are in the zip | It only needs your face. No markers, clips or IR lights |
+| **Accela filter** | Stanislaw Halik | Smooths the result. Ported to C | It steadies small shakes and keeps quick head turns quick |
+| **[ONNX Runtime](https://github.com/microsoft/onnxruntime)** | Microsoft | Runs the tracker's neural network. Its DLL is in the zip | Fast on an ordinary CPU, with a plain C interface the relay can load directly |
 
 ### Used, but not in the download
 
@@ -291,7 +288,7 @@ opentrack in turn is built on [ONNX Runtime](https://github.com/microsoft/onnxru
 | **[Vencord](https://github.com/Vendicated/Vencord)** | Vendicated and contributors | Only for the [optional Krisp key](docs/STREAM_DECK.md#discords-noise-filter-from-a-stream-deck-vencord). You install it yourself | Its plugins can reach Discord's Krisp switch in the background. The earlier approach drove Discord's window, which popped up and took the keyboard. It's against Discord's terms, so read the notice first |
 | **[DS4Windows](https://github.com/Ryochan7/DS4Windows)**, the Linux kernel's HID drivers, [psdevwiki](https://www.psdevwiki.com/ps4/DS4-BT), [Xidi](https://github.com/samuelgr/Xidi) | Their authors | Reference for how controllers report rumble, LED, battery and the Guide button | Real, working code and tests to learn from, rather than guessing. No code was copied |
 
-Everything else is already in Windows. The update check uses WinHTTP and `tar`, so it added no libraries.
+Everything else is already in Windows: DirectShow reads the camera, and WinHTTP and `tar` do the update check.
 
 Full license texts and copyright notices are in **[THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md)** — please keep them intact if you redistribute this. They deserve the credit for what actually makes the hard parts possible.
 

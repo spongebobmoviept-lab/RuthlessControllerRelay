@@ -194,6 +194,14 @@ Added in v1.2.0. Discord's keybinds can't see the virtual Xbox pad, so in Normal
 
 Separate from the relay, and the relay doesn't need it. A small plugin for the [Vencord](https://github.com/Vendicated/Vencord) client mod lets a Stream Deck key or a script switch Discord's Krisp noise filter on and off in the background, with no window popping up. Client mods are against Discord's terms, so read the notice first. Guide: **[docs/STREAM_DECK.md § Krisp](docs/STREAM_DECK.md#discords-noise-filter-from-a-stream-deck-vencord)**. The plugin is in [extras/vencord-bridge](extras/vencord-bridge).
 
+## Sneak peek: 2.0
+
+The relay is getting a real window. It lives in the taskbar and shows live sticks, buttons and head tracking on one tab, with the settings in a popup. The console stays, exactly as it is, one click away.
+
+<p align="center"><a href="https://spongebobmoviept-lab.github.io/RuthlessControllerRelay/"><img src="docs/images/2.0-sneak-peek.png" alt="The planned 2.0 window: three boxes reading HOTAS, Tracking and Ready, above live stick, head and button displays" width="640"></a></p>
+
+**[Click around in it here.](https://spongebobmoviept-lab.github.io/RuthlessControllerRelay/)** It's a mock-up: the pad and head movement are fake, and there's nothing to download yet. The real app is being built on the [`2.0-alpha` branch](../../tree/2.0-alpha).
+
 ## What's coming next
 
 - **Joystick force feedback** (DualSense HD haptics) is an open idea with no date. See [issue #10](https://github.com/spongebobmoviept-lab/RuthlessControllerRelay/issues/10).

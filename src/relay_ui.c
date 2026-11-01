@@ -1551,9 +1551,29 @@ static void ui_quit(void);
 #define UI_PREV_LOG_FILE "driver_install_log.prev.txt"
 static void ui_copy_text(const char *text);
 
+static char g_url_file[MAX_PATH + 32];
+static volatile LONG g_url_file_at = 0;
+
+/* We run elevated. Going through Explorer opens it in their normal browser, not an admin one. Explorer cuts a link
+   on its command line at 259 characters, so it goes in an internet shortcut instead, gone again a few seconds later.
+   Measured 2026-11-01: that carries 1,816 characters whole, and by 3,316 the browser never opens. */
 static void ui_open_url(const char *url) {
-    /* We run elevated. Going through Explorer opens it in their normal browser, not an admin one. */
-    ShellExecuteA(NULL, "open", "explorer.exe", url, NULL, SW_SHOWNORMAL);
+    char tmp[MAX_PATH], arg[MAX_PATH + 40];
+    if (!GetTempPathA(sizeof(tmp), tmp)) return;
+    snprintf(g_url_file, sizeof(g_url_file), "%sRuthlessRelayLink.url", tmp);
+    FILE *f = fopen(g_url_file, "w");
+    if (!f) return;
+    fprintf(f, "[InternetShortcut]\nURL=%s\n", url);
+    fclose(f);
+    snprintf(arg, sizeof(arg), "\"%s\"", g_url_file);
+    ShellExecuteA(NULL, "open", "explorer.exe", arg, NULL, SW_SHOWNORMAL);
+    InterlockedExchange(&g_url_file_at, (LONG)GetTickCount());
+}
+
+static void ui_url_file_cleanup(int now) {
+    if (!g_url_file_at || (!now && GetTickCount() - (DWORD)g_url_file_at < 15000)) return;
+    DeleteFileA(g_url_file);
+    InterlockedExchange(&g_url_file_at, 0);
 }
 
 /* The end of a log, with their user name taken out of any path. */
@@ -1620,9 +1640,10 @@ static int ui_url_encode(const char *src, char *dst, int cap) {
 }
 
 /* Assume they aren't signed in. GitHub sends them through sign-in with this whole link inside another one, and
-   measured 2026-11-01 it survives that at 4,032 characters and gives a 500 error page at 5,976. So the link stays
-   well under, dropping log lines until it fits. The whole report goes on the clipboard anyway. */
-#define UI_REPORT_URL_MAX 3400
+   measured 2026-11-01 it survives that at 4,032 characters and gives a 500 error page at 5,976. The internet shortcut
+   above is the tighter limit. So the link stays at 2,000, dropping log lines until it fits, and if even the basics
+   don't fit it just opens the form. The whole report goes on the clipboard anyway. */
+#define UI_REPORT_URL_MAX 2000
 #define UI_ISSUE_URL UI_REPO_URL "/issues/new?title=&body="
 
 static int ui_report_url(char *url, int cap, const char *head, const char *log) {
@@ -1644,6 +1665,10 @@ static int ui_report_url(char *url, int cap, const char *head, const char *log) 
         ui_report_body(body, room, head, tail);
         int n = ui_url_encode(body, url + base, cap - base);
         if (n >= 0) result = base + n;
+    }
+    if (result < 0) {
+        int n = ui_url_encode("**What happened?**\n\n\n\nThe details are on your clipboard: press Ctrl+V here.\n", url + base, cap - base);
+        result = n >= 0 ? base + n : base;
     }
     free(body);
     return result;
@@ -3192,6 +3217,7 @@ static void ui_tray_note(const wchar_t *title, const wchar_t *text) {
 /* One cleanup for every way out. The console handler, Quit, the pipe's quit and session end all land here. */
 static void ui_tray_remove(void) {
     if (g_ui_nid.hWnd) Shell_NotifyIconW(NIM_DELETE, &g_ui_nid);
+    ui_url_file_cleanup(1);
 }
 
 static void ui_quit(void) {
@@ -3292,6 +3318,7 @@ static void ui_shell_second(HWND h) {
             ui_tray_note(L"Still running here", L"The relay keeps your controller working from the tray. Right-click to quit.");
         }
     }
+    ui_url_file_cleanup(0);
     if (g_ui_window_open || g_head_mode) {
         const char *slash = strrchr(g_game_path, '\\');
         InterlockedExchange(&g_ui_game_up, g_game_path[0] && head_process_running(slash ? slash + 1 : g_game_path));
@@ -3483,6 +3510,9 @@ static int ui_selftest(void) {
     UI_CHECK(n > 0 && n <= UI_REPORT_URL_MAX, "a huge report still fits a link GitHub's sign-in can carry");
     n = ui_report_url(url, sizeof(url), "Version: 1", "line one\nline two\n");
     UI_CHECK(n > 0 && strstr(url, "What%20happened") && strstr(url, "line%20one"), "a small report keeps its log lines");
+    memset(head, ' ', sizeof(head) - 1);
+    n = ui_report_url(url, sizeof(url), head, "");
+    UI_CHECK(n > 0 && n <= UI_REPORT_URL_MAX && strstr(url, "clipboard"), "too big for a link: the form still opens, pointing at the clipboard");
     char tiny[8];
     UI_CHECK(ui_url_encode("abcdefghij", tiny, sizeof(tiny)) == -1, "encoding never runs past its buffer");
     UI_CHECK(ui_url_encode("a b&c", tiny, sizeof(tiny)) == -1 && ui_url_encode("a&", tiny, sizeof(tiny)) == 4 && !strcmp(tiny, "a%26"), "encodes what would break a link");

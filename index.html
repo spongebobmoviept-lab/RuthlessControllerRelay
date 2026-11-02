@@ -1051,7 +1051,7 @@ function setScene(n){
 function buildCtl(){
   const g=(t,k,opts,cur)=>`<h2>${t}</h2><div class="cs">${opts.map(([v,n])=>`<button class="cb" data-c="${k}" data-v="${v}">${n}</button>`).join('')}</div>`;
   $('#ctl').innerHTML=`<div id="ctlt" data-c="ctlmin"><h1>Mock-up controls</h1><span>${ic('x',10)}</span></div>
-  <p><b>Sneak peek of 2.0.</b> A clickable mock-up: the pad and head movement are fake, and the real app is being built. Everything here works, so click around.</p><p>This panel isn't part of the app. The app has no theme or accent picker: it follows Windows.</p>
+  <p><b>Mock-up of 2.0.</b> The pad and head movement are fake. <a href="https://github.com/spongebobmoviept-lab/RuthlessControllerRelay/releases/latest" style="color:inherit">The real 2.0 is out.</a> Everything here works, so click around.</p><p>This panel isn't part of the app. The app has no theme or accent picker: it follows Windows.</p>
   ${GROUPS.map(([t,ks])=>`<h2>${t}</h2><div class="cs">${ks.map(k=>`<button class="cb" data-c="scene" data-v="${k}">${SCENES[k].l}</button>`).join('')}</div>`).join('')}
   ${g('Windows mode','theme',[['dark','Dark'],['light','Light']])}
   ${g('Windows accent','accent',Object.entries(ACCENTS).map(([k,a])=>[k,a.n]))}

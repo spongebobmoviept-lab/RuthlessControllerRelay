@@ -471,7 +471,7 @@ function uiStatus(){
     else{L.word='Hold '+r1;L.sub='Free look, speed '+Math.round(S.flSpeed)}
   }else if(S.head==='waiting'){L.word='Waiting';L.sub=S.headWhy;if(S.headWhy!=='Game not running')L.wcls='w-warn'}
   else if(S.head==='noface'){L.word='No face';L.sub="Camera on, can't see you";L.wcls='w-warn'}
-  else if(S.head==='paused'){L.word='Paused';L.sub="Game doesn't have the mouse"}
+  else if(S.head==='paused'){L.word='Paused';L.sub="No head readings right now"}
   else if(S.fl==='looking'){L.word='Stick';L.sub='Stick has the camera'}
   else{L.word='Tracking';L.sub='Tap '+r1+' to recenter. Speed '+Math.round(S.headSpeed);L.wcls='w-ok'}
   if(L.wcls==='w-warn')worst=Math.max(worst,1);
@@ -595,7 +595,7 @@ function renderStatus(){
   setT($('#lWord'),L.word);setT($('#lSub'),L.sub);setC($('#lWord'),'bword '+L.wcls);setC($('#bLook'),'box '+L.cls);
   const camOn=(S.test||(S.look==='head'&&S.mode==='hotas'&&ready()&&S.head!=='waiting'));
   const alt=S.fl!=='none'&&ready()&&S.mode==='hotas';
-  $('#lSlot').innerHTML=(camOn?`<span class="chip" data-tip="Your camera is on. No picture is stored, shown or sent.">${ic('cam',12)}Camera</span>`:'')+(alt?`<span class="chip" data-tip="The relay is holding Left Alt for free look. It's always released when you let go.">Alt</span>`:'');
+  $('#lSlot').innerHTML=(camOn?`<span class="chip" data-tip="Your camera is on. No picture is stored, shown or sent.">${ic('cam',12)}Camera</span>`:'')+(alt?`<span class="chip" data-tip="Free look runs on the game's look axes, with no mouse or keys.">Axis</span>`:'');
   const sc=$('#scene');sc.classList.toggle('takeover',!!take);
   const wasFlash=S.flash,nowFlash=take&&take.cls?take.cls:null;
   if(take){setT($('#kWord'),take.word);setT($('#kSub'),take.sub);setC($('#bLink'),'box '+take.cls);$('#kSlot').innerHTML=''}
@@ -832,7 +832,7 @@ const PAGES={
     return H.head('Look')+H.seg('look',[['off','Off'],['stick','Stick'],['head','Head']],S.look)+
     (on?`<div class="prow" style="margin-top:8px"><span>${head?'Head speed':'Stick speed'}</span><span class="step"><button class="btn" data-a="stepSpeed" data-v="-1" data-tip="20% slower">-</button><button class="btn" data-a="stepSpeed" data-v="1" data-tip="20% faster">+</button></span></div>${slider(k)}`:'')+
     `<div class="note" style="margin-top:8px">${head?`Tap ${lbl('R1')} to recenter. Hold ${lbl('R1')}: the stick has the camera, your head waits. ${lbl('R1')} + click R3 freezes the camera.`:on?`Hold ${lbl('R1')} and the right stick moves the camera. Let go and it snaps back. Click R3 while holding to lock.`:`${lbl('R1')} is an ordinary button.`}</div>`+
-    (on&&!head?H.note('While you look, the relay holds Left Alt. That can affect Windows shortcuts. It is always released.'):'')+
+    (on&&!head?H.note('The relay sends no mouse movement or keys. Looking goes through the game\'s look axes, which you map once.'):'')+
     (S.mode!=='hotas'?H.note('Look only runs in HOTAS mode. This setting waits until you switch.'):'')+(head?H.btn('Head tracking settings','open','head'):H.btn('Head tracking setup','setup'))},
   head(){if(!S.camera)return H.head('Head tracking')+H.note('Not set up yet. Your webcam tracks your head, and the camera in the game follows it.')+H.btn('Set up head tracking','setup','','acc');
     return H.head('Head tracking')+
@@ -877,7 +877,7 @@ const PAGES={
     (problems.length?H.hr+problems.map(x=>H.note(esc(x),'warn')).join(''):H.note('Nothing needs you.'))},
   setup(){const u=S.setup,total=5;
     const head=(t)=>`<div class="phead"><div class="ptitle" style="margin-left:4px">${t}</div><span class="pstep">Step ${u.step} of ${total}</span></div>`;
-    if(u.step===1)return head('Head tracking setup')+`<div class="plabel" style="margin-top:0">Your webcam tracks your head, and the camera in the game follows it.</div><div class="notice">NOTICE: this sends your head movement to the game as mouse movement from software. Anti-cheat that studies mouse input could treat that as suspicious. One player using a head tracker has reported a ban for hacking, and the game studio's CEO said its detection may have seen it as inhuman mouse movement. There's no official rule or outcome yet, so nobody can promise it's safe. Use it at your own risk.</div><div class="pfoot"><span></span><span style="display:flex;gap:8px">${H.btn('Cancel','setupCancel')}${H.btn('I understand','setupNext','','acc')}</span></div>`;
+    if(u.step===1)return head('Head tracking setup')+`<div class="plabel" style="margin-top:0">Your webcam tracks your head, and the camera in the game follows it.</div><div class="notice">NOTICE: this moves the game\'s look axes from your webcam, with no mouse movement. One player whose head tracker moved the mouse has reported a ban. This doesn\'t move the mouse, but the game hasn\'t said head tracking is allowed, so nobody can promise it\'s safe. Use it at your own risk.</div><div class="pfoot"><span></span><span style="display:flex;gap:8px">${H.btn('Cancel','setupCancel')}${H.btn('I understand','setupNext','','acc')}</span></div>`;
     if(u.step===2)return head('Pick your camera')+['Integrated Webcam','USB Camera','Virtual Camera'].map(c=>H.radio('setupCam',c,u.cam,c)).join('')+H.note("It only turns on while your game runs, or during the test on the next page. The picture is never shown or stored.")+`<div class="pfoot"><span></span><span style="display:flex;gap:8px">${H.btn('Cancel','setupCancel')}${H.btn('Next','setupNext','','acc',u.cam?'':'disabled')}</span></div>`;
     if(u.step===3)return head('Pick your game')+(S.gamePath?`<div class="plabel" style="margin-top:0">Head tracking runs in ${esc(gameName())}, and starts when it does.</div>`:`<div class="plabel" style="margin-top:0">Pick your game's .exe. Head tracking runs in it, and starts when it does.</div>`)+`<div class="pfoot">${H.btn(S.gamePath?'Change':'Choose','chooseGame')}${H.btn('Next','setupNext','','acc',S.gamePath?'':'disabled')}</div>`;
     if(u.step===4)return head('Test it')+`<div class="plabel" style="margin-top:0">Turn your head. The dot on the panel should follow.</div><div class="prow"><span class="chip">${ic('cam',12)}Camera on</span>${H.btn('Center','center')}</div>`+H.row('Flip left and right',H.tgl('flipY',S.flipY))+H.row('Flip up and down',H.tgl('flipP',S.flipP))+H.note('No mouse movement is sent during this test. Your game is not touched.')+`<div class="pfoot">${H.btn('Skip','setupNext')}${H.btn('Next','setupNext','','acc')}</div>`;

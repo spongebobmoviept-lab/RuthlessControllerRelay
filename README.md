@@ -91,7 +91,7 @@ The window follows Windows' light or dark theme, and costs almost nothing: it st
 
 ### Settings
 
-<img align="right" src="docs/images/2.0-settings.png" alt="The settings popup: tiles for Mode, Virtual pad, Look, Head tracking, Button map, Game, Deck and Discord, Updates, App and Help" width="320">
+<p align="center"><img src="docs/images/2.0-settings.png" alt="The settings popup: tiles for Mode, Virtual pad, Look, Head tracking, Button map, Game, Deck and Discord, Updates, App and Help" width="360"></p>
 
 | Tile | What's in it |
 |---|---|
@@ -105,8 +105,6 @@ The window follows Windows' light or dark theme, and costs almost nothing: it st
 | **Updates** | [Your version, the update check](#updates) |
 | **App** | Start in the tray, show the console, start in console mode |
 | **Help** | [Report a problem](#report-a-bug), open the log, open the settings file |
-
-<br clear="right">
 
 ### The Details tab
 

@@ -2,7 +2,7 @@
 
 Turn your head and the camera follows, with both hands still on the sticks. All you need is a webcam, and it's set up from inside the relay window. Added in v1.3.0, and off until you turn it on.
 
-> **⚠️ Anti-cheat notice.** Head tracking sends your head movement to the game as **mouse movement from software**, constantly, while it's on. Some anti-cheat systems study how players use the mouse and keyboard, and could treat that as suspicious. No bans from this are known, but nobody outside the game's developers can promise that. It's your account, so it's your call. [More about anti-cheat](KNOWN_LIMITATIONS.md#anti-cheat).
+> **⚠️ Anti-cheat notice.** Head tracking sends your head movement to the game as **mouse movement from software**, constantly, while it's on. Some anti-cheat systems study how players use the mouse and keyboard, and could treat that as suspicious. One player using a head tracker has reported a ban for hacking, and the game studio's CEO said its detection may have seen it as inhuman mouse movement. There's no official rule or outcome yet, so nobody can promise it's safe. It's your account, so it's your call. [More about anti-cheat](KNOWN_LIMITATIONS.md#anti-cheat).
 
 ## What you need
 

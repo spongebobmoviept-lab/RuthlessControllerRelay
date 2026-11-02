@@ -163,7 +163,7 @@ It's built into the relay, so there's nothing to install and no other program or
 
 It only moves the mouse while you're in HOTAS mode and the game you picked has the mouse, so it leaves your desktop, other programs and in-game menus alone.
 
-**Anti-cheat notice:** this sends your head movement to the game as software mouse movement, constantly, and some anti-cheat studies mouse input. No bans are known, but no one can promise that. Use it at your own risk.
+**Anti-cheat notice:** this sends your head movement to the game as software mouse movement, constantly, and some anti-cheat studies mouse input. One player using a head tracker has reported a ban for hacking, and the game studio's CEO said its detection may have seen it as inhuman mouse movement. There's no official rule or outcome yet, so nobody can promise it's safe. Use it at your own risk.
 
 Full guide, including other webcams, other games and troubleshooting: **[docs/HEAD_TRACKING.md](docs/HEAD_TRACKING.md)**.
 

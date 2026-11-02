@@ -21,7 +21,7 @@ These are independent of each other and can both be on at once, causing differen
 
 **A separate thing this software can't fix: Steam.** If Steam is running, it independently intercepts the Guide button to focus its own overlay — confirmed directly in Valve's own developer documentation, and completely unrelated to the Game Bar mechanism above (there's no registry key for it, and disabling one does not disable the other). See [Steam Input must be disabled](#steam-input-must-be-disabled) above.
 
-**If you'd rather not use Guide:** set `button=back+start` (or any other combo) by hand — Back+Start is still fully supported, just no longer the automatic default for a fresh Xbox setup. Unlike the PS/Guide buttons, a Back+Start press *is* still forwarded to whatever the game sees on the virtual gamepad, same as any other button — see the note in the README about why that's deliberate, unchanged behavior rather than an oversight.
+**If you'd rather not use Guide:** set `button=back+start` (or any other combo) by hand — Back+Start is still fully supported, just no longer the automatic default for a fresh Xbox setup. A Back+Start press *is* still forwarded to whatever the game sees, same as any other button. That's deliberate. The PS button is never forwarded, and in HOTAS mode Guide isn't either.
 
 ### What about the Series controller's Share button?
 
@@ -103,17 +103,19 @@ Before getting into the one real risk area, it's worth being direct about what t
 
 Raised specifically because of [a WARDOGS community discussion](https://www.reddit.com/r/WarDogs/comments/1w61gq5/guide_fly_with_mkb_or_controller_with_super/) mentioning that [Interception](https://github.com/oblitum/Interception) (the kernel-mode driver several keyboard/mouse-to-joystick remapping tools, including UCR, use to read and remap raw keystrokes) is something a WARDOGS developer said would be watched for — worth being precise about, since this project has nothing to do with that category of tool at all.
 
-**Checked directly against the source, not assumed:** this project contains no `SetWindowsHookEx`, no low-level keyboard or mouse hook, and no kernel-level input filter of its own. It doesn't intercept or change your real keyboard or mouse. It does *send* software input in the two optional features described below.
+**Checked directly against the source, not assumed:** this project contains no `SetWindowsHookEx`, no low-level keyboard or mouse hook, and no kernel-level input filter of its own. It doesn't intercept or change your real keyboard or mouse, and since 2.0 it doesn't send any keyboard or mouse input either: there's no `SendInput`, `mouse_event`, `keybd_event` or `SetCursorPos` in it.
 
-**Why that distinction matters:** Interception and tools built on it (UCR being the best-known) exist specifically to intercept and remap real keyboard/mouse input at the driver level — turning WASD-and-mouselook into synthesized joystick axes, for example. That's a meaningfully different, more invasive category than what this project does, which is exactly why some anti-cheat vendors watch for it specifically. This project reads a physical game **controller** through ordinary consumer APIs (XInput, DirectInput, raw HID) and passes it to a virtual joystick or gamepad. It never intercepts or remaps your real keyboard or mouse. Its only keyboard and mouse output is the Left Alt and mouse movement from free look and head tracking, described below. To tell whether the game has the mouse, head tracking checks the cursor's position and whether it's hidden.
+**Why that distinction matters:** Interception and tools built on it (UCR being the best-known) exist specifically to intercept and remap real keyboard/mouse input at the driver level — turning WASD-and-mouselook into synthesized joystick axes, for example. That's a meaningfully different, more invasive category than what this project does, which is exactly why some anti-cheat vendors watch for it specifically. This project reads a physical game **controller** through ordinary consumer APIs (XInput, DirectInput, raw HID) and passes it to a virtual joystick or gamepad. It never intercepts or remaps your real keyboard or mouse, and it has no keyboard or mouse output. The only thing it reads about the mouse is whether the cursor is showing, so the buttons for mapping the look axes can refuse to run while you're flying.
 
 That said, this doesn't make the driver-presence concern below disappear — vJoy/HidHide/ViGEmBus are a separate, narrower category of thing some kernel-level anti-cheat scans watch for regardless of what a tool actually does with them. Read on for exactly what is and isn't confirmed about that.
 
-### Free look and head tracking send software input
+### Free look and head tracking send no software input
 
-Both are optional. **Free look** holds Left Alt and sends mouse movement while you hold RB. **Head tracking** holds Left Alt and sends mouse movement constantly while it's on and the game has the mouse. This is the same kind of input DS4Windows and Steam Input produce, and the movement comes from your real stick or your real head, not from anything aiming for you. Other head-tracking setups commonly drive the mouse the same way.
+Since 2.0, both go through the game's look axes on the virtual joystick, which you map on its own HOTAS screen. The movement comes from your real stick or your real head, not from anything aiming for you.
 
-Still, **some anti-cheat studies how players use the mouse and keyboard**, and software mouse movement mixed with joystick flying isn't what most players' input looks like. One player using a head tracker has reported a ban for hacking, and the game studio's CEO said its detection may have seen it as inhuman mouse movement. There's no official rule or outcome yet, so nobody can promise it's safe. It's your call. Turning free look off (`F`, or `freelook=off`) stops all of it. `--uninstall` isn't needed for that.
+v1.1.0 to v1.4.1 held Left Alt and sent software mouse movement instead. One player whose head tracker moved the mouse has reported a ban for hacking, and the game studio's CEO said its detection may have seen it as inhuman mouse movement. That's why it's gone: [why we don't think 2.0 gets flagged](../README.md#no-mouse-no-keys).
+
+Still, **some anti-cheat studies input patterns**, and a look axis following your head all the time isn't what most players' input looks like. There's no official rule or outcome yet, so nobody can promise it's safe. It's your call. Turning free look off (the Look page, `F` in the console, or `freelook=off`) stops all of it. `--uninstall` isn't needed for that.
 
 ### The actual risk, scoped precisely
 

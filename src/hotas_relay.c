@@ -103,8 +103,8 @@
    whether they still had the old build (see CHANGELOG.md). Bump this with
    every GitHub release. */
 #ifndef RELAY_VERSION /* a test can pretend to be an older version */
-#define RELAY_VERSION "2.0.0-alpha"
-#define RELAY_VERSION_W L"2.0.0-alpha"
+#define RELAY_VERSION "2.0.0"
+#define RELAY_VERSION_W L"2.0.0"
 #endif
 
 #ifndef HIDHIDE_CLI_INSTALLED /* a test can pretend HidHide's full installer never ran */
@@ -160,7 +160,9 @@ static int g_ui_prev_crash = 0;            /* the last run's log ends in a crash
 static volatile LONG g_ui_tick = 0;        /* moves at 15 Hz while the loop is alive */
 static volatile LONG g_ui_rate = 0;        /* input changes per second */
 static volatile LONG g_ui_connecting = 0, g_ui_vjoy_busy = 0, g_ui_head_failed = 0, g_ui_hotkey_failed = 0;
-static int g_ui_cfg_console = 0, g_ui_cfg_tray = 0, g_ui_seen_tray_note = 0, g_ui_show_camera = 0;
+static int g_ui_cfg_console = 0, g_ui_cfg_tray = 0, g_ui_seen_tray_note = 0, g_ui_seen_look_note = 0, g_ui_show_camera = 0;
+static int g_ui_windowed;                  /* relay_ui.c */
+static volatile LONG g_ui_cfg_loaded = 0;  /* the ini has been read: until then, saving would wipe it with defaults */
 static volatile LONG g_ui_cfg_dirty = 0;   /* the shell thread saves the ini on its next tick */
 static LONG g_ui_cfg_mode = -1;            /* mode= in the ini: the last mode, remembered in window mode */
 static int g_ui_win_x = 0, g_ui_win_y = 0, g_ui_win_w = 0, g_ui_win_h = 0;
@@ -1711,6 +1713,9 @@ static void get_config_path(char *path, size_t len) {
 static CRITICAL_SECTION g_cfg_lock;
 
 static void save_config(UINT mods, UINT vk, DWORD button_mask, DWORD hold_ms, const char *game_path) {
+#ifndef SAFE_MODE_NO_EXTRAS
+    if (g_ui_windowed && !g_ui_cfg_loaded) return; /* the window's threads start before load_config */
+#endif
     char path[MAX_PATH + 32], tmp[MAX_PATH + 40];
     get_config_path(path, sizeof(path));
     snprintf(tmp, sizeof(tmp), "%s.tmp", path);
@@ -1841,8 +1846,8 @@ static void save_config(UINT mods, UINT vk, DWORD button_mask, DWORD hold_ms, co
         "head_height=%d\n"
         "head_fps=%d\n"
         "#\n"
-        "# update_check: on or off. On asks GitHub for the latest release number once\n"
-        "# each time the relay starts, and the title line offers a newer one. Nothing is\n"
+        "# update_check: on or off. On asks GitHub for the latest release number when the\n"
+        "# relay starts and once a day after, and the relay offers a newer one. Nothing is\n"
         "# downloaded unless you press U and say yes. C on the dashboard flips this.\n"
         "update_check=%s\n"
         "#\n"
@@ -1889,7 +1894,7 @@ static void save_config(UINT mods, UINT vk, DWORD button_mask, DWORD hold_ms, co
     fprintf(out, "#\n# The window: the last mode, where it sits, and whether it starts in the tray.\n");
     if (g_ui_cfg_mode >= 0) fprintf(out, "mode=%s\n", g_ui_cfg_mode == 1 ? "hotas" : "normal");
     if (g_ui_win_w > 0) fprintf(out, "ui_x=%d\nui_y=%d\nui_w=%d\nui_h=%d\n", g_ui_win_x, g_ui_win_y, g_ui_win_w, g_ui_win_h);
-    fprintf(out, "console=%s\nstart_tray=%s\nseen_tray_note=%d\nhead_show_camera=%s\n", g_ui_cfg_console ? "on" : "off", g_ui_cfg_tray ? "on" : "off", g_ui_seen_tray_note, g_ui_show_camera ? "on" : "off");
+    fprintf(out, "console=%s\nstart_tray=%s\nseen_tray_note=%d\nseen_look_note=%d\nhead_show_camera=%s\n", g_ui_cfg_console ? "on" : "off", g_ui_cfg_tray ? "on" : "off", g_ui_seen_tray_note, g_ui_seen_look_note, g_ui_show_camera ? "on" : "off");
 #endif
     fclose(out);
     MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
@@ -1909,6 +1914,9 @@ static void load_config(UINT *mods_out, UINT *vk_out, DWORD *button_mask_out, DW
 
     FILE *f = fopen(path, "r");
     if (!f) {
+#ifndef SAFE_MODE_NO_EXTRAS
+        InterlockedExchange(&g_ui_cfg_loaded, 1); /* nothing to read, so this first save can't wipe anything */
+#endif
         save_config(*mods_out, *vk_out, *button_mask_out, *hold_ms_out, "");
         g_toggle_button_is_fresh_default = 1; /* genuinely first-ever run -- let the connect loop upgrade
                                                    this to the PS button once it knows the real controller
@@ -2002,6 +2010,8 @@ static void load_config(UINT *mods_out, UINT *vk_out, DWORD *button_mask_out, DW
             g_ui_cfg_tray = !strncmp(p + 11, "on", 2);
         } else if (!strncmp(p, "seen_tray_note=", 15)) {
             g_ui_seen_tray_note = atoi(p + 15);
+        } else if (!strncmp(p, "seen_look_note=", 15)) {
+            g_ui_seen_look_note = atoi(p + 15);
         } else if (!strncmp(p, "head_show_camera=", 17)) {
             g_ui_show_camera = !strncmp(p + 17, "on", 2);
 #endif
@@ -5915,8 +5925,9 @@ static void run_head_setup_flow(void) {
     printf("Your webcam tracks your head, and the camera in the game follows it.\n\n");
     set_color(CLR_YELLOW_BR);
     printf("NOTICE: this moves the game's look axes from your webcam, with no mouse movement.\n");
-    printf("The game hasn't said head tracking is allowed, and one player using a head tracker\n");
-    printf("has reported a ban. Nobody can promise it's safe. Use it at your own risk.\n\n");
+    printf("One player whose head tracker moved the mouse has reported a ban. This doesn't move\n");
+    printf("the mouse, but the game hasn't said head tracking is allowed, so nobody can promise\n");
+    printf("it's safe. Use it at your own risk.\n\n");
     set_color(CLR_NORMAL);
 
     if (!ht_files_present()) {
@@ -5988,6 +5999,7 @@ cancel:
 /* One HTTPS GET, following GitHub's redirects, into memory or a file. Returns 1 on a 200. */
 #define RELAY_REPO_PATH "spongebobmoviept-lab/RuthlessControllerRelay"
 #define RELAY_REPO_PATH_W L"spongebobmoviept-lab/RuthlessControllerRelay"
+static volatile DWORD g_update_http_status = 0;     /* the last reply's status, so a missing file can be told from a failed one */
 static int update_http_get(LPCWSTR host, LPCWSTR path, char *mem, size_t memLen, size_t *got, FILE *file) {
     int ok = 0;
     size_t have = 0;
@@ -5998,8 +6010,11 @@ static int update_http_get(LPCWSTR host, LPCWSTR path, char *mem, size_t memLen,
     if (req && WinHttpSendRequest(req, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) && WinHttpReceiveResponse(req, NULL)) {
         DWORD status = 0, statusLen = sizeof(status), n = 0;
         WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &status, &statusLen, WINHTTP_NO_HEADER_INDEX);
+        g_update_http_status = status;
         if (status == 200) {
             static char chunk[65536];
+            DWORD want = 0, wantLen = sizeof(want);
+            BOOL known = WinHttpQueryHeaders(req, WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &want, &wantLen, WINHTTP_NO_HEADER_INDEX);
             ok = 1;
             for (;;) {
                 char *into = file ? chunk : mem + have;
@@ -6010,6 +6025,7 @@ static int update_http_get(LPCWSTR host, LPCWSTR path, char *mem, size_t memLen,
                 if (file && fwrite(chunk, 1, n, file) != n) { ok = 0; break; }
                 have += n;
             }
+            if (file && known && have != want) ok = 0; /* the connection dropped partway */
         }
     }
     if (req) WinHttpCloseHandle(req);
@@ -6019,22 +6035,27 @@ static int update_http_get(LPCWSTR host, LPCWSTR path, char *mem, size_t memLen,
     return ok;
 }
 
-/* Once per launch, in the background: is there a newer release? Quiet on any failure.
-   All it does with the answer is offer it on the title line. */
+/* In the background: is there a newer release? Quiet on any failure. All it does with the answer is offer it.
+   The PC may not be online yet when the relay starts, so a failed try goes again a few times, and a relay
+   can stay up for weeks in the tray, so it looks again once a day. */
 static DWORD WINAPI update_check_thread(LPVOID arg) {
     (void)arg;
     static char body[65536];
-    size_t have = 0;
     char tag[sizeof(g_update_tag)];
-    if (update_http_get(L"api.github.com", L"/repos/" RELAY_REPO_PATH_W L"/releases/latest", body, sizeof(body), &have, NULL)) {
-        body[have] = '\0';
-        if (update_tag_from_json(body, tag, sizeof(tag)) && relay_version_newer(tag, RELAY_VERSION)) {
-            strcpy(g_update_tag, tag);
-            InterlockedExchange(&g_update_ready, 1);
-            log_line("update check: %s is available", tag);
+    for (int tries = 0;; tries++) {
+        size_t have = 0;
+        int got = g_update_check && update_http_get(L"api.github.com", L"/repos/" RELAY_REPO_PATH_W L"/releases/latest", body, sizeof(body), &have, NULL);
+        if (got) {
+            body[have] = '\0';
+            if (update_tag_from_json(body, tag, sizeof(tag)) && relay_version_newer(tag, RELAY_VERSION)) {
+                strcpy(g_update_tag, tag);
+                InterlockedExchange(&g_update_ready, 1);
+                log_line("update check: %s is available", tag);
+                return 0;
+            }
         }
+        Sleep(!got && tries < 3 ? 60000 : 24 * 3600 * 1000);
     }
-    return 0;
 }
 
 static const char *const UPDATE_FILES[] = {"RuthlessControllerRelay.exe", "RuthlessControllerRelay_SAFE.exe", "RelayControl.exe"};
@@ -6053,64 +6074,158 @@ static long update_run(const char *exe, char *cmd, const char *dir, DWORD waitMs
     return (long)code;
 }
 
-/* Unpacks an update zip into tmp, checks the new relay runs, then swaps the programs in dir,
-   putting everything back if any step fails. Settings and drivers aren't touched.
-   Returns NULL on success, or what went wrong. */
-static const char *update_apply(const char *zip, const char *tmp, const char *dir) {
-    char tar[MAX_PATH], cmd[MAX_PATH * 3], src[MAX_PATH + 40], dst[MAX_PATH + 40], old[MAX_PATH + 44];
+/* A major release can add files and folders, so the update carries whatever its zip holds. Past this many it isn't ours. */
+#define UPDATE_MAX_FILES 1024
+#define UPDATE_OLD_LIST "update_old_files.txt"
+#define UPDATE_TEMP_NAME "RuthlessControllerRelay_update"
+static char g_update_list[UPDATE_MAX_FILES][MAX_PATH];
 
-    /* full path to Windows' own tar: an administrator program must not pick one up from the current folder */
-    if (!ExpandEnvironmentStringsA("%SystemRoot%\\System32\\tar.exe", tar, sizeof(tar))) return "couldn't find tar";
-    snprintf(cmd, sizeof(cmd), "\"%s\" -xf \"%s\" -C \"%s\"", tar, zip, tmp);
-    if (update_run(tar, cmd, tmp, 60000) != 0) return "couldn't unpack the download";
+/* Every file under root, as a path relative to it. Returns how many, or -1 if it can't be trusted. */
+static int update_list_files(const char *root, const char *sub, int n) {
+    char pat[MAX_PATH * 2];
+    WIN32_FIND_DATAA fd;
+    snprintf(pat, sizeof(pat), "%s\\%s*", root, sub);
+    HANDLE h = FindFirstFileA(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE) return n;
+    do {
+        if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..")) continue;
+        int isDir = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+        char rel[MAX_PATH];
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) n = -1;
+        else if (snprintf(rel, sizeof(rel), "%s%s%s", sub, fd.cFileName, isDir ? "\\" : "") >= (int)sizeof(rel)) n = -1;
+        else if (isDir) n = update_list_files(root, rel, n);
+        else if (n >= UPDATE_MAX_FILES) n = -1;
+        else strcpy(g_update_list[n++], rel);
+    } while (n >= 0 && FindNextFileA(h, &fd));
+    FindClose(h);
+    return n;
+}
 
-    snprintf(src, sizeof(src), "%s\\%s", tmp, UPDATE_FILES[0]);
-    snprintf(cmd, sizeof(cmd), "\"%s\" --test-config", src);
-    if (update_run(src, cmd, tmp, 30000) != 0) return "the new version failed its self-test";
-
-    size_t done = 0;
-    const char *problem = NULL;
-    for (; done < UPDATE_FILE_COUNT; done++) {
-        snprintf(src, sizeof(src), "%s\\%s", tmp, UPDATE_FILES[done]);
-        snprintf(dst, sizeof(dst), "%s\\%s", dir, UPDATE_FILES[done]);
-        snprintf(old, sizeof(old), "%s.old", dst);
-        if (GetFileAttributesA(src) == INVALID_FILE_ATTRIBUTES) { problem = "the download was missing a file"; break; }
-        /* a running program can be renamed but not overwritten */
-        if (GetFileAttributesA(dst) != INVALID_FILE_ATTRIBUTES && !MoveFileExA(dst, old, MOVEFILE_REPLACE_EXISTING)) { problem = "couldn't replace a program file"; break; }
-        if (!CopyFileA(src, dst, FALSE)) {
-            MoveFileExA(old, dst, MOVEFILE_REPLACE_EXISTING);
-            problem = "couldn't copy the new program in";
-            break;
+static void update_make_parents(const char *dir, const char *rel) {
+    char p[MAX_PATH * 2];
+    size_t skip = strlen(dir) + 1;
+    snprintf(p, sizeof(p), "%s\\%s", dir, rel);
+    for (char *c = p + skip; *c; c++) {
+        if (*c == '\\') {
+            *c = '\0';
+            CreateDirectoryA(p, NULL);
+            *c = '\\';
         }
     }
+}
+
+/* Only ever the updater's own temp folders. */
+static void update_remove_tree(const char *path) {
+    if (!strstr(path, UPDATE_TEMP_NAME)) return;
+    char pat[MAX_PATH * 2], p[MAX_PATH * 2];
+    WIN32_FIND_DATAA fd;
+    snprintf(pat, sizeof(pat), "%s\\*", path);
+    HANDLE h = FindFirstFileA(pat, &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..")) continue;
+            snprintf(p, sizeof(p), "%s\\%s", path, fd.cFileName);
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
+                if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) RemoveDirectoryA(p);
+                else DeleteFileA(p);
+            } else if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                update_remove_tree(p);
+            } else {
+                SetFileAttributesA(p, FILE_ATTRIBUTE_NORMAL);
+                DeleteFileA(p);
+            }
+        } while (FindNextFileA(h, &fd));
+        FindClose(h);
+    }
+    RemoveDirectoryA(path);
+}
+
+/* Puts the n listed files from under from over the same places under dir. Each file it replaces is kept as
+   .old until the next start, and if any step fails, everything goes back the way it was. Settings are never
+   replaced, and a copy of them is kept in case a new version changes them. Returns NULL, or what went wrong. */
+static const char *update_swap(const char *from, const char *dir, int n) {
+    static unsigned char state[UPDATE_MAX_FILES]; /* 0 untouched, 1 added, 2 replaced */
+    char src[MAX_PATH * 2], dst[MAX_PATH * 2], old[MAX_PATH * 2 + 8];
+    const char *problem = NULL;
+    int i;
+    if (n <= 0) return "the download had nothing usable in it";
+    memset(state, 0, sizeof(state));
+    for (i = 0; i < n; i++) {
+        if (!_stricmp(g_update_list[i], HOTKEY_CONFIG_FILE)) continue;
+        snprintf(src, sizeof(src), "%s\\%s", from, g_update_list[i]);
+        snprintf(dst, sizeof(dst), "%s\\%s", dir, g_update_list[i]);
+        snprintf(old, sizeof(old), "%s.old", dst);
+        update_make_parents(dir, g_update_list[i]);
+        int existed = GetFileAttributesA(dst) != INVALID_FILE_ATTRIBUTES;
+        /* a running program can be renamed but not overwritten */
+        if (existed && !MoveFileExA(dst, old, MOVEFILE_REPLACE_EXISTING)) { problem = "couldn't replace a program file"; break; }
+        state[i] = existed ? 2 : 1;
+        if (!CopyFileA(src, dst, FALSE)) { problem = "couldn't copy the new program in"; break; }
+    }
     if (problem) {
-        while (done-- > 0) { /* back to exactly what was there */
-            snprintf(dst, sizeof(dst), "%s\\%s", dir, UPDATE_FILES[done]);
+        for (; i >= 0; i--) { /* back to exactly what was there */
+            snprintf(dst, sizeof(dst), "%s\\%s", dir, g_update_list[i]);
             snprintf(old, sizeof(old), "%s.old", dst);
-            if (GetFileAttributesA(old) != INVALID_FILE_ATTRIBUTES) MoveFileExA(old, dst, MOVEFILE_REPLACE_EXISTING);
+            if (state[i] == 2) MoveFileExA(old, dst, MOVEFILE_REPLACE_EXISTING);
+            else if (state[i] == 1) DeleteFileA(dst);
         }
         return problem;
     }
+    snprintf(dst, sizeof(dst), "%s\\" UPDATE_OLD_LIST, dir);
+    FILE *f = fopen(dst, "w");
+    if (f) {
+        for (i = 0; i < n; i++) if (state[i] == 2) fprintf(f, "%s\n", g_update_list[i]);
+        fclose(f);
+    }
+    snprintf(src, sizeof(src), "%s\\" HOTKEY_CONFIG_FILE, dir);
+    snprintf(dst, sizeof(dst), "%s\\" HOTKEY_CONFIG_FILE ".before_update", dir);
+    CopyFileA(src, dst, FALSE);
     return NULL;
 }
 
-/* Downloads this release's small update zip and applies it.
+/* Unpacks an update zip into a folder under tmp, checks the new relay runs, then swaps everything in.
+   Returns NULL on success, or what went wrong. */
+static const char *update_apply(const char *zip, const char *tmp, const char *dir) {
+    char tar[MAX_PATH], cmd[MAX_PATH * 4], from[MAX_PATH + 72], src[MAX_PATH + 112];
+
+    /* full path to Windows' own tar: an administrator program must not pick one up from the current folder */
+    if (!ExpandEnvironmentStringsA("%SystemRoot%\\System32\\tar.exe", tar, sizeof(tar))) return "couldn't find tar";
+    snprintf(from, sizeof(from), "%s\\new", tmp);
+    if (!CreateDirectoryA(from, NULL)) return "couldn't write to the temp folder";
+    snprintf(cmd, sizeof(cmd), "\"%s\" -xf \"%s\" -C \"%s\"", tar, zip, from);
+    if (update_run(tar, cmd, tmp, 180000) != 0) return "couldn't unpack the download";
+
+    snprintf(src, sizeof(src), "%s\\%s", from, UPDATE_FILES[0]);
+    if (GetFileAttributesA(src) == INVALID_FILE_ATTRIBUTES) return "the download was missing a file";
+    int n = update_list_files(from, "", 0); /* before the self-test, so nothing it writes gets installed */
+    if (n < 0) return "the download had something unexpected in it";
+    snprintf(cmd, sizeof(cmd), "\"%s\" --test-config", src);
+    if (update_run(src, cmd, from, 60000) != 0) return "the new version failed its self-test";
+    return update_swap(from, dir, n);
+}
+
+/* Downloads this release's update zip and applies it. A release with no update zip sends everyone to the full download.
    ponytail: trusts HTTPS from this GitHub repo, the same as downloading it by hand; no signature check. */
 static const char *update_install(const char *tag, const char *dir) {
-    char tmp[MAX_PATH], zip[MAX_PATH + 16];
+    char base[MAX_PATH], tmp[MAX_PATH + 64], zip[MAX_PATH + 80];
     wchar_t path[256];
-    if (!GetTempPathA(sizeof(tmp) - 40, tmp)) return "couldn't find the temp folder";
-    strcat(tmp, "RuthlessControllerRelay_update");
-    CreateDirectoryA(tmp, NULL);
+    if (!GetTempPathA(sizeof(base), base)) return "couldn't find the temp folder";
+    /* a new folder each time: nothing left from an earlier try, and nothing anyone put there first */
+    snprintf(tmp, sizeof(tmp), "%s" UPDATE_TEMP_NAME "_%lu", base, (unsigned long)GetTickCount());
+    if (!CreateDirectoryA(tmp, NULL)) return "couldn't write to the temp folder";
     snprintf(zip, sizeof(zip), "%s\\update.zip", tmp);
     swprintf(path, 256, L"/" RELAY_REPO_PATH_W L"/releases/download/%hs/RuthlessControllerRelay_update.zip", tag);
+    const char *problem = "couldn't write to the temp folder";
     FILE *f = fopen(zip, "wb");
-    if (!f) return "couldn't write to the temp folder";
-    size_t got = 0;
-    int ok = update_http_get(L"github.com", path, NULL, 0, &got, f);
-    if (fclose(f) != 0) ok = 0;
-    if (!ok || got == 0) return "the download failed";
-    return update_apply(zip, tmp, dir);
+    if (f) {
+        size_t got = 0;
+        int ok = update_http_get(L"github.com", path, NULL, 0, &got, f);
+        if (fclose(f) != 0) ok = 0;
+        if (!ok || got == 0) problem = g_update_http_status == 404 ? "this version needs the full download" : "the download failed";
+        else problem = update_apply(zip, tmp, dir);
+    }
+    update_remove_tree(tmp);
+    return problem;
 }
 
 static BOOL WINAPI console_ctrl_handler(DWORD ctrl_type);
@@ -6153,16 +6268,119 @@ static void run_update_flow(void) {
     ExitProcess(0);
 }
 
-/* Clears what the last update left behind. Best effort: the old program may still be closing. */
+/* Clears the .old files in dir that the last update listed, and the list once they're all gone. They're only ever
+   inside the relay's folder. Best effort: the old program may still be closing, and the next start tries again. */
+static void update_cleanup_in(const char *dir) {
+    char list[MAX_PATH + 32], old[MAX_PATH * 2 + 8], line[MAX_PATH + 2];
+    int left = 0;
+    snprintf(list, sizeof(list), "%s\\" UPDATE_OLD_LIST, dir);
+    FILE *f = fopen(list, "r");
+    if (!f) return;
+    while (fgets(line, sizeof(line), f)) {
+        line[strcspn(line, "\r\n")] = '\0';
+        if (!line[0] || line[0] == '\\' || line[0] == '/' || strstr(line, "..") || strchr(line, ':')) continue;
+        snprintf(old, sizeof(old), "%s\\%s.old", dir, line);
+        if (!DeleteFileA(old) && GetLastError() != ERROR_FILE_NOT_FOUND) left = 1;
+    }
+    fclose(f);
+    if (!left) DeleteFileA(list);
+}
+
 static void update_cleanup(void) {
-    char dir[MAX_PATH], old[MAX_PATH + 44];
+    char dir[MAX_PATH], old[MAX_PATH + 44], tmp[MAX_PATH + 40];
     GetModuleFileNameA(NULL, dir, sizeof(dir));
     char *slash = strrchr(dir, '\\');
     if (slash) *slash = '\0';
-    for (size_t i = 0; i < UPDATE_FILE_COUNT; i++) {
+    for (size_t i = 0; i < UPDATE_FILE_COUNT; i++) { /* what versions before 2.0 left */
         snprintf(old, sizeof(old), "%s\\%s.old", dir, UPDATE_FILES[i]);
         DeleteFileA(old);
     }
+    update_cleanup_in(dir);
+    if (GetTempPathA(MAX_PATH, tmp)) { /* and their temp folder */
+        strcat(tmp, UPDATE_TEMP_NAME);
+        update_remove_tree(tmp);
+    }
+}
+
+/* --test-update: the swap and its way back, on real files in the temp folder. */
+static void ut_put(const char *base, const char *rel, const char *text) {
+    char p[MAX_PATH * 2];
+    update_make_parents(base, rel);
+    snprintf(p, sizeof(p), "%s\\%s", base, rel);
+    FILE *f = fopen(p, "w");
+    if (f) {
+        fputs(text, f);
+        fclose(f);
+    }
+}
+
+static int ut_is(const char *base, const char *rel, const char *text) {
+    char p[MAX_PATH * 2], got[64] = "";
+    snprintf(p, sizeof(p), "%s\\%s", base, rel);
+    FILE *f = fopen(p, "r");
+    if (!f) return text == NULL;
+    if (!fgets(got, sizeof(got), f)) got[0] = '\0';
+    fclose(f);
+    return text && !strcmp(got, text);
+}
+
+static int update_selftest(void) {
+    char tmp[MAX_PATH], root[MAX_PATH + 32], from[MAX_PATH + 40], dir[MAX_PATH + 40], locked[MAX_PATH + 60];
+    int failed = 0;
+#define UT(test, what) do { int ok_ = (test); printf("%s %s\n", ok_ ? "ok  " : "FAIL", what); if (!ok_) failed++; } while (0)
+    if (!GetTempPathA(sizeof(tmp), tmp)) return 1;
+    snprintf(root, sizeof(root), "%s" UPDATE_TEMP_NAME "_test", tmp);
+    update_remove_tree(root);
+    snprintf(from, sizeof(from), "%s\\new", root);
+    snprintf(dir, sizeof(dir), "%s\\dir", root);
+    CreateDirectoryA(root, NULL);
+    CreateDirectoryA(from, NULL);
+    CreateDirectoryA(dir, NULL);
+
+    /* a major release: replaces a program, adds a folder, leaves settings and everything else alone */
+    ut_put(from, "prog.exe", "new");
+    ut_put(from, "extra\\deep\\added.dll", "new");
+    ut_put(from, HOTKEY_CONFIG_FILE, "new");
+    ut_put(dir, "prog.exe", "old");
+    ut_put(dir, HOTKEY_CONFIG_FILE, "mine");
+    ut_put(dir, "keep.txt", "mine");
+    UT(update_swap(from, dir, update_list_files(from, "", 0)) == NULL, "a release with a new folder goes in");
+    UT(ut_is(dir, "prog.exe", "new"), "the program is replaced");
+    UT(ut_is(dir, "prog.exe.old", "old"), "the old one is kept until the next start");
+    UT(ut_is(dir, "extra\\deep\\added.dll", "new"), "the new folder arrives");
+    UT(ut_is(dir, HOTKEY_CONFIG_FILE, "mine"), "settings aren't replaced");
+    UT(ut_is(dir, HOTKEY_CONFIG_FILE ".before_update", "mine"), "a copy of the settings is kept");
+    UT(ut_is(dir, "keep.txt", "mine"), "other files are left alone");
+    update_cleanup_in(dir);
+    UT(ut_is(dir, "prog.exe.old", NULL) && ut_is(dir, UPDATE_OLD_LIST, NULL), "the next start clears the old ones");
+    UT(ut_is(dir, "prog.exe", "new"), "and keeps the new one");
+
+    /* a file that can't be replaced, last in the list: everything goes back */
+    ut_put(from, "prog.exe", "newer");
+    ut_put(from, "second\\added.dll", "new");
+    ut_put(from, "zlocked.dat", "new");
+    ut_put(dir, "zlocked.dat", "old");
+    snprintf(locked, sizeof(locked), "%s\\zlocked.dat", dir);
+    HANDLE hold = CreateFileA(locked, GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
+    UT(update_swap(from, dir, update_list_files(from, "", 0)) != NULL, "a file that can't be replaced fails the update");
+    CloseHandle(hold);
+    UT(ut_is(dir, "prog.exe", "new"), "the program goes back");
+    UT(ut_is(dir, "prog.exe.old", NULL), "with no backup left over");
+    UT(ut_is(dir, "second\\added.dll", NULL), "a file it added is taken out");
+    UT(ut_is(dir, "zlocked.dat", "old"), "the locked file is untouched");
+    UT(ut_is(dir, UPDATE_OLD_LIST, NULL), "and nothing is listed for cleanup");
+
+    /* the list can't reach outside the relay's folder */
+    ut_put(root, "outside.txt.old", "mine");
+    ut_put(dir, UPDATE_OLD_LIST, "..\\outside.txt\n");
+    update_cleanup_in(dir);
+    UT(ut_is(root, "outside.txt.old", "mine"), "cleanup stays inside the relay's folder");
+
+    update_remove_tree(root);
+    UT(GetFileAttributesA(root) == INVALID_FILE_ATTRIBUTES, "the temp folder is removed");
+    printf(failed ? "UPDATE CHECKS FAILED (%d)\n" : "ALL UPDATE CHECKS PASSED (%d failed)\n", failed);
+#undef UT
+    return failed != 0;
 }
 
 /* Only ever starts once. */
@@ -8064,6 +8282,9 @@ int main(int argc, char **argv) {
        next to the exe (or removes the test one if none existed) so this
        never leaves the actual config touched. No admin/driver/vJoy
        action happens on this path at all. */
+#ifndef SAFE_MODE_NO_EXTRAS
+    if (argc > 1 && !strcmp(argv[1], "--test-update")) return update_selftest();
+#endif
     if (argc > 1 && !strcmp(argv[1], "--test-config")) {
         int failed = 0;
         UINT mods, vk;
@@ -8454,6 +8675,7 @@ int main(int argc, char **argv) {
     load_config(&g_hotkey_mods, &g_hotkey_vk, &g_toggle_button_mask, &g_toggle_hold_ms, g_game_path,
                 sizeof(g_game_path));
 #ifndef SAFE_MODE_NO_EXTRAS
+    InterlockedExchange(&g_ui_cfg_loaded, 1);
     if (g_ui_windowed && g_ui_cfg_mode >= 0) InterlockedExchange(&g_hidden_mode, g_ui_cfg_mode);
 #endif
     char hotkey_str[32], button_str[48];
@@ -8880,7 +9102,7 @@ int main(int argc, char **argv) {
 
                 if ((modeNow != 1 || !g_freelook_enabled) && (lookLocked || lookLockArmed)) {
                     /* left HOTAS mode, or free look just got turned off over the control pipe: nothing to
-                       keep locked -- without the second check a lock would keep Left Alt held system-wide */
+                       keep locked -- without the second check a lock would keep the camera parked in Normal mode */
                     lookLocked = lookLockArmed = 0;
                     look_changed = 1;
                 }
@@ -9186,7 +9408,7 @@ int main(int argc, char **argv) {
                     InterlockedExchange(&g_relay_state, RELAY_STATE_CONNECTED);
                     QueryPerformanceCounter(&lastPrint);
                 } else if (key == 'F') {
-                    /* Off > Normal > Head, the same order as a Stream Deck key. The main loop lets go of Alt and any lock on its next spin. */
+                    /* Off > Normal > Head, the same order as a Stream Deck key. The main loop lets go of any lock on its next spin. */
                     LONG next = g_head_mode ? 0 : g_freelook_enabled ? 2 : 1;
                     if (next == 2) head_start_thread();
                     InterlockedExchange(&g_head_mode, next == 2);

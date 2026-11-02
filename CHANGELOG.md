@@ -1,5 +1,41 @@
 # Changelog
 
+## v2.0.0 — 2026-11-01
+
+### Changed
+- **No mouse, no keys.** The relay no longer sends mouse movement or key presses of any kind. Head tracking and RB free look move two axes on the virtual joystick (Slider0 and Slider1), which you map on the game's own HOTAS screen. [Why we don't think this gets flagged, and what nobody can promise](README.md#no-mouse-no-keys).
+- **The mouse felt sharper.** Joystick look is a little less precise, and the game can snap to center near the middle. v1.4.1 stays up if you'd rather have the mouse version and accept the risk.
+- `+` and `-` only change head tracking speed now. There's no stick speed setting, because the game reads the axis directly.
+
+### Added
+- **A real window.** Live sticks, buttons and head tracking on one tab, with the settings behind the gear. It lives in the taskbar, closes to the tray and follows Windows' light or dark theme. The console is the same code, one click away: gear, then App, then Show console.
+- **Mapping tools.** `Ctrl+Alt+K` and `Ctrl+Alt+L`, or buttons on the Look page, push one look axis alone for 8 seconds so the game's bind screen can see it. Menus only: they refuse unless the relay is in HOTAS mode and the mouse cursor is showing.
+- **Two head speeds.** Left/right and up/down each get a slider, and they work while you fly.
+- **Three head styles:** Position, Circle and Speed (`look_axis_style=`, `Ctrl+Alt+J`), and a center skip for Position (`look_center_skip=`, `Ctrl+Alt+Up` and `Down`). [Which to use](docs/HEAD_TRACKING.md#which-style-to-use).
+- **Report a problem.** Copies a report and opens GitHub's issue form with it filled in, in your own browser. You need a free GitHub account. Nothing is sent until you press Submit.
+- **Show my camera.** Your picture in the head ring, in this window only, off by default.
+
+### Updater
+- **It can carry a major release.** It installs whatever the update zip holds, including new files and folders, instead of three fixed programs. If any step fails, everything goes back the way it was. Your settings are never replaced, and a copy of them is kept as `ruthless_controller_relay.ini.before_update`.
+- **A release with no update zip** tells you it needs the full download, instead of just saying the download failed.
+- **A fresh temp folder for every try,** and it's removed afterward. A download that stops partway is caught before anything changes.
+- **It keeps looking.** If the PC isn't online yet when the relay starts, it tries again a few times, and a relay left running looks again once a day. A note in the tray tells you, for anyone who starts in the tray.
+- **Try again** after a failed update, and **What's new** before you install. `--test-update` checks the swap and the way back on real files.
+
+### Removed
+- `freelook_speed=`, and the Left Alt hold from free look and head tracking.
+
+### Not there yet
+- First run and a pending reboot still use the old console screens, and the tray menu isn't dark.
+- The window needs administrator rights like the relay itself, so a second launch shows a UAC prompt before it brings up the first one.
+
+### Updating
+- **From 1.x:** you have to [map the look axes](README.md#map-the-look-axes-once) once in your game, or RB won't move the camera. A note in the tray reminds you the first time. Your other settings stay.
+- **From a version before v1.4.0 with `U`:** the updater only replaces the programs, so get the [full zip](../../releases/latest) once to keep head tracking.
+
+### Build
+- `src/relay_ui.c` is the window, included by `src/hotas_relay.c`. The full build adds `-Wl,--subsystem,windows -luser32 -lgdi32`. The SAFE build has no window and stays a console program. See [Building from source](README.md#building-from-source).
+
 ## v1.4.1 — 2026-11-01
 
 ### Fixed

@@ -271,6 +271,8 @@ A 21st vJoy button was considered and rejected. Changing the device descriptor m
 
 ### Head tracking: mouse won, and what the game's reset does
 
+(2.0 went back to the joystick. See [Off the mouse after all](#off-the-mouse-after-all).)
+
 Head tracking was first designed around the virtual joystick: spare look axes, bound in the game, with no mouse involved. In testing the axes moved correctly at 1000 reports a second, verified with a raw HID read, but the camera didn't follow, and turning on the game's absolute joystick look broke normal free look. Mouse movement through the game's own free look worked right away, so that's what shipped. The joystick route was removed instead of being left in as an untested option.
 
 At first the head tracker wasn't in this project: opentrack read the webcam and sent its result over UDP to localhost, and the relay was the only thing that talked to the game. It's all on its own threads, and none of them exist until head tracking is first used, so the controller path isn't touched.
@@ -315,3 +317,20 @@ The full, plain-English breakdown — connection type by connection type, with a
 ## Credit
 
 None of the driver-level engineering this project depends on was built here. See **[THIRD_PARTY_LICENSES.md](../THIRD_PARTY_LICENSES.md)** for full credit and license text for opentrack, vJoy, HidHide, ViGEmBus, and ViGEmClient, and for the real, working reference sources (DS4Windows, the Linux kernel's HID drivers) that made the rumble/LED/battery reverse-engineering in this project possible without guessing. This project is a comparatively small piece of glue on top of a genuinely large amount of other people's driver-development work.
+
+### Off the mouse after all
+
+On 2026-10-27 a player reported a ban "for hacking" with only a head tracker running, "my head becomes my mouse". The game studio's CEO replied that detection had recently been dialled up, and that it sounded like inhuman mouse movement. No outcome or official rule followed that could be found, but the relay was moving the mouse the same way, constantly. So 2.0 removes every bit of it: no `SendInput`, `mouse_event`, `keybd_event` or `SetCursorPos` anywhere in the program, and no held Left Alt.
+
+The earlier joystick try had failed for a reason nobody caught then. It bound the axes by editing the game's settings file, and that doesn't move the camera. The game's own bind screen writes the binding differently. Bound there, the same axes worked.
+
+Mapping needed its own tool, because a bind screen only sees an axis that moves, and a head or stick moves every axis at once. `Ctrl+Alt+K` and `Ctrl+Alt+L` push one axis alone for 8 seconds. They refuse to run unless the mouse cursor is showing, so they can't fire while flying.
+
+Axes aren't a mouse, and that showed:
+
+- **The game's absolute look snaps to center near the middle,** probably because it reads near center as letting go. It's responsive and can't drift, so it's the default, and a center skip steps over that spot.
+- **Without absolute look the axis is a turn rate,** so the relay has to measure how fast the head turns. That's smoother near center, but it lags and can drift, because nothing tells the game where center is.
+- **Re-zeroing after a tracker hiccup snapped the view.** The center now moves only on a plain RB tap, the first pose and a tracker restart. A short hiccup holds the view where it is.
+- **Three bind quirks:** a bind made during a sweep saved an off-center value, the game has no dead zone setting for free look, and the settings file's names change with each game build, so none of this can be hardcoded.
+
+The mouse still feels sharper, and that was weighed honestly. It's a trade: less sharp, but no mouse movement left to look inhuman. v1.4.1 stays up for anyone who wants the other side of it.

@@ -29,7 +29,7 @@ footer { color: #666; font-size: 8.5pt; border-top: 1px solid #ccc; padding-top:
 </style></head><body>
 
 <h1>Ruthless Controller Relay — What Works Cheat Sheet</h1>
-<p class="sub">Plain-English guide: which controllers work, how well, and why. No tech knowledge needed. For version 1.4.0.</p>
+<p class="sub">Plain-English guide: which controllers work, how well, and why. No tech knowledge needed. For version 2.0.0.</p>
 
 <h2>The short version</h2>
 <div class="box blue"><b>Best experience: a USB cable for PlayStation controllers, a wireless dongle for Xbox controllers.</b> That way everything works: moving, buttons, vibration, and light color. Bluetooth works great for moving and buttons on every controller, but PlayStation controllers (DualSense / DualShock 4) lose vibration and light color over Bluetooth — see why below. This is not something wrong with your setup, it's true for everyone, everywhere.</div>
@@ -58,7 +58,7 @@ HOTAS mode is the main reason this program exists — and a wired Xbox controlle
 <table>
 <tr><th style="width:34%">Version</th><th style="width:34%">What it does</th><th>When to use it</th></tr>
 <tr><td><b>RuthlessControllerRelay.exe</b></td><td>Full version — vibration, light color, and every optional feature.</td><td>Use this one first. This is the normal, recommended version.</td></tr>
-<tr><td><b>RuthlessControllerRelay_SAFE.exe</b></td><td>Stripped-down version — no vibration, light color, battery reading, head tracking, update check or Stream Deck control. Just clean, reliable button/stick input.</td><td>Only use this as a backup if the full version ever acts strange on your PC. It's a simpler fallback with fewer moving parts.</td></tr>
+<tr><td><b>RuthlessControllerRelay_SAFE.exe</b></td><td>Stripped-down version — no window, vibration, light color, battery reading, head tracking, update check or Stream Deck control. Just clean, reliable button/stick input.</td><td>Only use this as a backup if the full version ever acts strange on your PC. It's a simpler fallback with fewer moving parts.</td></tr>
 </table>
 
 <h2>Controls — what the keys do</h2>
@@ -71,11 +71,12 @@ HOTAS mode is the main reason this program exists — and a wired Xbox controlle
 <tr><td><kbd>G</kbd></td><td>Pick which game this launches, or launch it directly next time.</td></tr>
 <tr><td><kbd>F</kbd></td><td>Free look: off, normal, or head tracking.</td></tr>
 <tr><td><kbd>H</kbd></td><td>Set up head tracking, or change its camera or game.</td></tr>
-<tr><td><kbd>+</kbd> / <kbd>-</kbd></td><td>Free look or head tracking speed. Saved automatically.</td></tr>
+<tr><td><kbd>+</kbd> / <kbd>-</kbd></td><td>Head tracking speed, while it's on. Saved automatically.</td></tr>
+<tr><td><kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>K</kbd> or <kbd>L</kbd></td><td>Push the look left/right or up/down axis alone for 8 seconds, so your game can map it. Menus only.</td></tr>
 <tr><td><kbd>U</kbd></td><td>Install an update, when the title line says a new version is out. It asks first.</td></tr>
 <tr><td><kbd>C</kbd></td><td>Turn the automatic update check on or off.</td></tr>
 </table>
-<p class="note">Type these keys into the black program window itself (click it first so it's the active window), not into your game.</p>
+<p class="note">Everything is in the window: click a box at the top, or the gear at the bottom right. The letter keys are for the old console, which is still there: gear, then App, then Show console. Click the console first so it's the active window, not your game.</p>
 
 <h2>Looking around in HOTAS mode</h2>
 <table>
@@ -85,23 +86,23 @@ HOTAS mode is the main reason this program exists — and a wired Xbox controlle
 <tr><td>Tap <b>RB</b> (head tracking on)</td><td>Recenter. Look straight ahead first.</td></tr>
 <tr><td>Hold <b>RB</b> (head tracking on)</td><td>Your head pauses and the stick has the camera, so you can look behind you. Let go to return to your head.</td></tr>
 </table>
-<p class="note">For the camera to snap back or recenter, bind your game's free look reset, if it has one, to RB's joystick button: button 6, which some games show as button 5.</p>
+<p class="note"><b>Map the look axes once, or RB won't move the camera.</b> On your game's HOTAS screen, press Ctrl+Alt+K and click its look left/right row within 8 seconds, then Ctrl+Alt+L for look up/down. For the camera to snap back or recenter, bind your game's free look reset, if it has one, to RB's joystick button: button 6, which some games show as button 5.</p>
 
 <h2>Head tracking in one minute</h2>
-<div class="box blue"><b>Press H in the program window, pick your webcam, pick your game.</b> That's the setup, and there's nothing to install. Then start the game, switch to HOTAS mode and turn your head. The dot in the HEAD box shows where you're pointing. It only works in the game you picked, and only in games where Left Alt + mouse is free look. To use it in another game, press H again, then G.</div>
-<div class="box red"><b>Anti-cheat notice.</b> Head tracking sends your head movement to the game as mouse movement from software, constantly, while it's on. Some anti-cheat studies how players use the mouse and keyboard, and could treat that as suspicious. One player using a head tracker has reported a ban for hacking, and the game studio's CEO said its detection may have seen it as inhuman mouse movement. There's no official rule or outcome yet, so nobody can promise it's safe. Use it at your own risk.</div>
+<div class="box blue"><b>Click the gear: pick your webcam under Head tracking, your game under Game, and set Look to Head.</b> Map the look axes once (above). There's nothing to install. Then start the game, switch to HOTAS mode and turn your head. The dot in the ring shows where you're pointing. It only runs with the game you picked, and only works in games that let you bind look axes to a joystick. To use it in another game, change Game and map the axes there too.</div>
+<div class="box red"><b>Anti-cheat notice.</b> Since 2.0, the relay sends no mouse movement and no keys. Your head moves joystick axes that you map on the game's own screen. One player whose head tracker moved the mouse has reported a ban for hacking, and the game studio's CEO said its detection may have seen it as inhuman mouse movement. This doesn't move the mouse, so we don't think it gets flagged that way. That's our reasoning, not a ruling: the game hasn't said head tracking is allowed, so nobody can promise it's safe. Use it at your own risk.</div>
 <table>
-<tr><th style="width:27%">HEAD box says</th><th>Meaning</th></tr>
-<tr><td><b>OFF</b></td><td>Head tracking is off, or you're in Normal mode. Switch to HOTAS mode. If the dashboard doesn't say "free look HEAD", press F.</td></tr>
-<tr><td><b>WAITING</b></td><td>Head tracking is on, but it isn't reading a head yet. Normal until your game is running. If it's running, face the camera, check that the head_tracker folder is next to the program, then press H and check your camera.</td></tr>
-<tr><td><b>TRACKING</b></td><td>Your head is moving the camera.</td></tr>
-<tr><td><b>PAUSED</b></td><td>The game you picked doesn't have the mouse: you're in a menu, in another program, or on another monitor. It comes back by itself.</td></tr>
+<tr><th style="width:27%">Look box says</th><th>Meaning</th></tr>
+<tr><td><b>OFF</b></td><td>Head tracking is off, or you're in Normal mode. Switch to HOTAS mode, and set Look to Head.</td></tr>
+<tr><td><b>WAITING</b></td><td>Head tracking is on, but it isn't reading a head yet. Normal until your game is running. If it's running, face the camera, check that the head_tracker folder is next to the program, then check your camera under Head tracking.</td></tr>
+<tr><td><b>TRACKING</b></td><td>Your head is moving the look axes. Camera not moving? Map the look axes (above).</td></tr>
+<tr><td><b>PAUSED</b></td><td>No head readings for a moment. It comes back by itself.</td></tr>
 <tr><td><b>RB: STICK</b></td><td>You're holding RB, so the stick has the camera.</td></tr>
 <tr><td><b>LOCKED</b></td><td>The camera is frozen with RB + R3.</td></tr>
 </table>
 
 <h2 style="break-before: page">Reading the screen: right vs. wrong</h2>
-<p>The top banner and the two INPUT/OUTPUT boxes are the whole story — glance at those first any time something feels off.</p>
+<p>This is the old console (gear, then App, then Show console). The window's three boxes at the top say the same things in fewer words. In the console, the top banner and the two INPUT/OUTPUT boxes are the whole story — glance at those first any time something feels off.</p>
 <div class="cols">
 <div class="col g"><h3>✓ Everything's fine</h3><ul>
 <li>Banner reads <b>NORMAL MODE</b> or <b>HOTAS</b> — colored <b>teal</b>, <b>purple</b>, or <b>green</b> (never orange or red)</li>
@@ -126,5 +127,5 @@ This is your green light — safe to start the game.</div>
 <h2>Something not working?</h2>
 <div class="box blue">Every run writes a plain-text log file next to the program (<b>driver_install_log.txt</b>). If anything looks wrong, that file has the details — send it along if you're asking for help troubleshooting. There's also an <b>Uninstall.bat</b> included that cleanly removes everything the program installed, if you ever want to fully undo it. Head tracking installs nothing: it lives in the head_tracker folder beside the program, so deleting that folder removes it.</div>
 
-<footer>Ruthless Controller Relay — compatibility cheat sheet — for v1.4.0 — updated 2026-11-01</footer>
+<footer>Ruthless Controller Relay — compatibility cheat sheet — for v2.0.0 — updated 2026-11-01</footer>
 </body></html>

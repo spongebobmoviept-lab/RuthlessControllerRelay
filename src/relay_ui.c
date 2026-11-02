@@ -2026,7 +2026,7 @@ static void ui_page_head(void) {
         p_note(L"The head_tracker folder isn't next to the relay. It's in the full download.");
         return;
     }
-    p_note(L"Your webcam tracks your head, and the camera in the game follows it through the look axes, with no mouse movement. The game hasn't said head tracking is allowed, and one player using a head tracker has reported a ban. Nobody can promise it's safe. Use it at your own risk.");
+    p_note(L"Your webcam tracks your head, and the camera in the game follows it through the look axes, with no mouse movement. One player whose head tracker moved the mouse has reported a ban. This doesn't move the mouse, but the game hasn't said head tracking is allowed, so nobody can promise it's safe. Use it at your own risk.");
     swprintf(v, 64, L"%ld", (long)g_head_speed);
     p_slider(L"Head speed", (float)(log((double)g_head_speed) / log(2000.0)), v, P_SPEED);
     swprintf(v, 64, L"%.2f", g_head_yaw < 0 ? -g_head_yaw : g_head_yaw);
@@ -2151,7 +2151,7 @@ static void ui_page_updates(void) {
         p_info(L"Available", v);
     }
     p_toggle(L"Check for updates", g_update_check, P_UPDCHECK);
-    p_note(L"Only asks GitHub, once when the relay starts. It never updates without you.");
+    p_note(L"Only asks GitHub, when the relay starts and once a day after. It never updates without you.");
     if (g_update_stage == 1) p_note(L"Downloading and testing the new version...");
     else if (g_update_stage == 2) {
         p_note(L"Updated. Restart the relay to use it.");
@@ -2159,10 +2159,12 @@ static void ui_page_updates(void) {
     } else if (g_update_stage == 3) {
         swprintf(v, 96, L"Nothing was changed: %hs", g_update_problem);
         p_note(v);
+        p_button(L"Try again", P_UPDATE_NOW, 1);
         p_button(L"Get it from GitHub", P_RELEASES, 0);
     } else if (g_update_ready) {
-        if (g_ui_game_up) p_note(L"Your game is running. Installing closes the relay, and your game loses its controller.");
+        if (g_ui_game_up) p_note(L"Your game is running. To finish, the relay has to close and reopen, and your game loses its controller until it does.");
         p_button(L"Install now", P_UPDATE_NOW, 1);
+        p_button(L"What's new", P_RELEASES, 0);
     }
 }
 
@@ -2697,7 +2699,7 @@ static LRESULT CALLBACK ui_pop_proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         case WM_LBUTTONDOWN: {
             int id = ui_pop_hit_at((short)LOWORD(lp) * 96.f / g_pop.dpi, (short)HIWORD(lp) * 96.f / g_pop.dpi);
             g_pop_down = id;
-            if (id == P_SPEED || id == P_YAW || id == P_PITCH || id == P_DEAD) {
+            if (id == P_SPEED || id == P_YAW || id == P_PITCH || id == P_DEAD || id == P_SKIP) {
                 g_drag = id;
                 SetCapture(h);
                 ui_slider_drag(lp);
@@ -3327,6 +3329,18 @@ static void ui_shell_second(HWND h) {
             ui_tray_note(L"Still running here", L"The relay keeps your controller working from the tray. Right-click to quit.");
         }
     }
+    if (g_ui_cfg_loaded && !g_ui_seen_look_note && g_freelook_enabled) {
+        g_ui_seen_look_note = 1;
+        g_ui_cfg_dirty = 1;
+        ui_tray_note(L"Looking around has changed", L"Free look and head tracking no longer use the mouse. Map the look axes once on your game's HOTAS screen: gear, then Look.");
+    }
+    static int told_update = 0;
+    if (g_update_ready && !told_update) { /* someone who starts in the tray never sees the button in the window */
+        told_update = 1;
+        wchar_t note[96];
+        swprintf(note, 96, L"Version %hs is out. Click the gear, then Updates. It only installs if you say so.", g_update_tag);
+        ui_tray_note(L"Update available", note);
+    }
     ui_url_file_cleanup(0);
     if (g_ui_window_open || g_head_mode) {
         const char *slash = strrchr(g_game_path, '\\');
@@ -3336,7 +3350,7 @@ static void ui_shell_second(HWND h) {
         g_ui_cfg_mode = g_hidden_mode;
         g_ui_cfg_dirty = 1;
     }
-    if (g_ui_cfg_dirty) {
+    if (g_ui_cfg_dirty && g_ui_cfg_loaded) {
         g_ui_cfg_dirty = 0;
         save_config(g_hotkey_mods, g_hotkey_vk, g_toggle_button_mask, g_toggle_hold_ms, g_game_path);
     }

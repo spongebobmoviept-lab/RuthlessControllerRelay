@@ -1,10 +1,14 @@
 # FAQ
 
+## RB free look or head tracking stopped moving the camera after updating to 2.0
+
+**Map the look axes once.** 2.0 doesn't use the mouse any more, so looking goes through your game's look axes, and the game has to be told about them. [Here's how](../README.md#map-the-look-axes-once). Why it changed: [No mouse, no keys](../README.md#no-mouse-no-keys).
+
 ## My sticks do nothing in HOTAS mode, but some buttons work
 
 **The relay is probably listening to the wrong device.** The game only gets its sticks from the relay, so if the relay isn't reading your controller, the sticks do nothing. Any buttons that still work are coming straight from your real controller, because the relay hasn't hidden it.
 
-Look at the relay window and move a stick:
+Look at the relay's console and move a stick. In 2.0, that's the gear, then **App**, then **Show console**:
 
 | Check | Working | Wrong |
 |---|---|---|
@@ -24,7 +28,7 @@ Still stuck? Run `JoystickDoctor.exe --list` and paste what it prints into an [i
 
 ### Doing it by hand
 
-- **See what's connected:** press `Win+R` and run `joy.cpl`. While the relay runs you'll normally see your controller (unless it's hidden), `vJoy Device` and one virtual pad.
+- **See what's connected:** press `Win+R` and run `joy.cpl`. While the relay runs you'll normally see your controller (unless it's hidden), the relay's virtual joystick (`vJoy Device`, or `WARDOGS HOTAS Controller` once the relay has named it) and one virtual pad.
 - **Remove old leftovers:** open Device Manager, choose **View > Show hidden devices**, and open **Human Interface Devices**. Grey entries aren't connected. Right-click a grey **HID-compliant game controller** and choose **Uninstall device**.
 - **Leave everything else alone.** Don't remove anything that isn't grey, anything that looks like a keyboard or mouse, or any driver.
 

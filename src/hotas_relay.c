@@ -111,6 +111,11 @@
 #define HIDHIDE_CLI_INSTALLED "C:\\Program Files\\Nefarius Software Solutions\\HidHide\\x64\\HidHideCLI.exe"
 #endif
 #define TOGGLE_HOTKEY_ID 1
+#define LOOK_STYLE_HOTKEY_ID 2
+#define LOOK_BIND_X_HOTKEY_ID 3
+#define LOOK_BIND_Y_HOTKEY_ID 4
+#define LOOK_SKIP_UP_HOTKEY_ID 5
+#define LOOK_SKIP_DOWN_HOTKEY_ID 6
 #define HOTKEY_CONFIG_FILE "ruthless_controller_relay.ini"
 
 /* Set by load_config() in main() before toggle_thread starts. NOT actually
@@ -1143,67 +1148,47 @@ static volatile LONG g_hidden_mode = -1;
 #define FREELOOK_RIGHT_VJOY_BTN 20  /* WARDOGS: "Button 19" */
 #define FREELOOK_BTN_ON 16000       /* ~50% stick deflection presses it */
 #define FREELOOK_BTN_OFF 12000      /* ~37% releases it */
-/* MOUSE MODE (fifth round, same day, the user's idea again): the buttons
-   were glitchy too, but the game's own keyboard/mouse free look -- hold
-   Left Alt, move the mouse -- is "super fast" and smooth, and works fine
-   alongside joystick flying. So while RB is held this holds Left Alt and
-   turns the right stick's left/right into relative mouse movement
-   (SendInput), the same kind of stick-to-mouse remap DS4Windows and Steam
-   Input do -- the user's call after the anti-cheat question was raised.
-   Mouse deltas add up to distance no matter how many arrive per frame, so
-   speed is computed from real elapsed time (QPC) with sub-pixel carry,
-   not from the send rate: steady regardless of timing jitter. Linear past
-   a small deadzone (a stick resting slightly off center would otherwise
-   creep the camera -- the one place a deadzone is unavoidable). Letting go
-   of RB releases Alt, which is what returns the game's camera; the R3
-   lock keeps Alt held instead, until RB is tapped or R3 clicked. Alt is
-   released on every way out: mode switch, disconnect, Ctrl+C, crash exit
-   -- a stuck Alt would break the whole keyboard system-wide. Speed is
-   adjustable live with + / - on the dashboard. Overrides
-   FREELOOK_USE_BUTTONS and the Slider0 axis when on. */
-#define FREELOOK_USE_MOUSE 1
-#define FREELOOK_MOUSE_DEADZONE 2600 /* ~8% of the stick's range */
-#define FREELOOK_ALT_SCANCODE 0x38   /* Left Alt -- sent as a scan code so raw-input/DirectInput games see it too */
-static volatile LONG g_freelook_mouse_speed = 9138; /* mouse counts/sec at full deflection -- + / - on the dashboard, saved as freelook_speed= in the ini; default is the speed the user settled on in real play */
-static volatile LONG g_freelook_enabled = 1;        /* freelook= in the ini -- off makes RB an ordinary button again, for games where Left Alt + mouse is not free look */
+/* NO MOUSE (2026-11-01, the user's call after a head tracker ban was reported): the relay sends no mouse movement
+   and no keys at all. While RB is held the right stick's left/right goes on Slider0, the game's look axis. */
+#define FREELOOK_STICK_DEADZONE 2600 /* ~8% of the stick's range: a stick resting off center must not creep the camera */
+static volatile LONG g_freelook_enabled = 1;        /* freelook= in the ini -- off makes RB an ordinary button again */
 /* freelook=head, the third free-look mode: head_tracker.c reads the webcam, and
-   the relay alone decides what the game sees -- mouse moves, HOTAS mode only,
-   game focused only. g_freelook_enabled is 1 here too, so hold RB + stick and the
+   the relay alone decides what the game sees -- the look axes, HOTAS mode only.
+   g_freelook_enabled is 1 here too, so hold RB + stick and the
    R3 lock work exactly as in plain free look. */
 static volatile LONG g_head_mode = 0;
 static char g_head_camera[128] = "";                /* head_camera=: set with H. Tracking needs one */
 static int g_head_width = 640, g_head_height = 480, g_head_fps = 60; /* head_width= etc: the camera mode to ask for */
-static volatile LONG g_head_speed = 50;             /* mouse counts per degree of head turn -- + / - on the dashboard, saved as head_speed= */
+static volatile LONG g_head_speed = 50;             /* 50 = full axis at 45 degrees of head turn -- + / - on the dashboard, saved as head_speed= */
 static double g_head_yaw = 1.0, g_head_pitch = 1.0; /* head_yaw= / head_pitch=: multiplies that direction; 0 turns it off, negative flips it */
 static double g_head_deadzone = 0.15;               /* head_deadzone=, degrees: wobble smaller than this is ignored */
 static volatile LONG g_head_last_tick = 0;          /* GetTickCount() of the last pose received, for the dashboard */
 static volatile LONG g_head_seen = 0;               /* 1 once any pose has arrived */
-static volatile LONG g_head_gate_open = 0;          /* mouse output: poses arriving, HOTAS mode, game focused with the cursor over it */
-static volatile LONG g_head_stick_sent = 0;         /* head mode: mouse counts the stick has added during this RB hold, undone on letting go */
+static volatile LONG g_head_gate_open = 0;          /* poses arriving, HOTAS mode */
+static volatile LONG g_look_steered = 0;            /* the stick moved during this RB hold, so letting go leaves the head's center alone */
 #ifndef SAFE_MODE_NO_EXTRAS
 static volatile LONG g_head_view_x = 0, g_head_view_y = 0; /* where the head points from straight ahead, -100..100, for the dashboard and Stream Deck */
 #endif
 static volatile LONG g_head_recenter = 0;           /* RB tapped: the next pose becomes straight ahead, for the head box */
+/* Head tracking goes out on vJoy Slider0/Slider1, bound to the game's own look axes. */
+static volatile LONG g_look_head_x = 0, g_look_head_y = 0; /* where the head has the look axes, -32767..32767 */
+/* look_axis_style=, and Ctrl+Alt+J while testing: how the look reaches the two axes. Which one the game
+   wants isn't known yet. straight: left/right on one axis, up/down on the other. circle: round the two axes,
+   forward at the top, left at the left, behind at the bottom. speed: how fast the head turns, not where it points. */
+enum { LOOK_STYLE_STRAIGHT = 0, LOOK_STYLE_CIRCLE, LOOK_STYLE_SPEED, LOOK_STYLE_COUNT };
+static const char *const g_look_style_names[LOOK_STYLE_COUNT] = {"straight", "circle", "speed"};
+static volatile LONG g_look_style = LOOK_STYLE_STRAIGHT;
+/* Mapping help: Ctrl+Alt+K pushes Slider0 alone, Ctrl+Alt+L pushes Slider1 alone, for the game's bind screen.
+   Only while the mouse cursor is showing: the game hides it while flying, so this can't run in a match. */
+static volatile LONG g_look_bind_axis = -1;         /* -1 none, 0 Slider0, 1 Slider1 */
+static volatile LONG g_look_bind_value = 0;         /* where the push has it, -32767..32767 */
+/* look_center_skip=, and Ctrl+Alt+Up / Down while testing, in percent of the axis. With Absolute Freelook the game
+   snaps to center when the axis gets near the middle, as if the stick were let go. This steps over that zone, so
+   apart from the moment after a recenter the game never sees a value inside it. Whether it helps isn't known yet. */
+static volatile LONG g_look_skip = 0;
 static volatile LONG g_update_check = 1;            /* update_check= / the C key: look for a newer release once per launch */
 static volatile LONG g_update_ready = 0;            /* 1 once g_update_tag holds a newer release */
 static char g_update_tag[24] = "";
-static volatile LONG g_freelook_mouse_x = 0;        /* right stick X while looking, 0 otherwise -- the pump reads this */
-static volatile LONG g_freelook_alt_held = 0;
-
-static void freelook_send_alt(int down) {
-    INPUT in;
-    memset(&in, 0, sizeof(in));
-    in.type = INPUT_KEYBOARD;
-    in.ki.wScan = FREELOOK_ALT_SCANCODE;
-    in.ki.dwFlags = KEYEVENTF_SCANCODE | (down ? 0 : KEYEVENTF_KEYUP);
-    SendInput(1, &in, sizeof(in));
-}
-
-/* Idempotent, safe from any thread -- called from every exit path. */
-static void freelook_release_alt(void) {
-    InterlockedExchange(&g_freelook_mouse_x, 0);
-    if (InterlockedExchange(&g_freelook_alt_held, 0)) freelook_send_alt(0);
-}
 /* For the dashboard banner only; the main loop owns the real state. */
 enum { FREELOOK_OFF = 0, FREELOOK_LOOKING, FREELOOK_LOOKING_LOCK_ARMED, FREELOOK_LOCKED };
 static volatile LONG g_freelook_state = FREELOOK_OFF;
@@ -1681,7 +1666,6 @@ static LONG WINAPI crash_filter(EXCEPTION_POINTERS *ep) {
         ExitThread(1);
     }
 #endif
-    freelook_release_alt(); /* first, before anything that could hang -- a stuck Alt breaks the whole keyboard */
     g_crash_info.exceptionCode = ep->ExceptionRecord->ExceptionCode;
     g_crash_info.exceptionAddress = ep->ExceptionRecord->ExceptionAddress;
     g_crash_info.threadId = GetCurrentThreadId();
@@ -1833,23 +1817,17 @@ static void save_config(UINT mods, UINT vk, DWORD button_mask, DWORD hold_ms, co
     fprintf(out,
         "#\n"
         "# freelook: on, off or head. HOTAS mode only. Hold RB to free look: the right\n"
-        "# stick's left/right turns the camera (this holds Left Alt and moves the\n"
-        "# mouse -- the game's own Alt + mouse free look), up/down keeps flying\n"
-        "# pitch, and letting go snaps the camera back. Hold RB and click R3 to\n"
-        "# lock the camera where it is; tap RB or click R3 to unlock. Set to off\n"
-        "# for a game where Left Alt + mouse isn't free look -- RB is then an\n"
-        "# ordinary button again. head adds head tracking on top of on: the relay\n"
-        "# reads your webcam while your game runs, and turns your head movement\n"
-        "# into mouse moves while the game has focus.\n"
+        "# stick's left/right turns the camera through the game's look axis, up/down\n"
+        "# keeps flying pitch, and letting go brings the camera back. Hold RB and click\n"
+        "# R3 to lock the camera where it is; tap RB or click R3 to unlock. Set to off\n"
+        "# and RB is an ordinary button again. head adds head tracking on top of on:\n"
+        "# the relay reads your webcam while your game runs, and sends your head movement\n"
+        "# on the same look axes. Bind them on the game's HOTAS screen: Ctrl+Alt+K pushes\n"
+        "# left/right and Ctrl+Alt+L pushes up/down, for 8 seconds, in menus only.\n"
         "freelook=%s\n"
         "#\n"
-        "# freelook_speed: camera turn speed at full stick (mouse counts per\n"
-        "# second). Change it live with + and - while the dashboard is showing --\n"
-        "# saved here automatically.\n"
-        "freelook_speed=%ld\n"
-        "#\n"
-        "# head_speed: mouse counts per degree you turn your head. Change it live\n"
-        "# with + and - while head tracking is on -- saved here automatically.\n"
+        "# head_speed: how far your head has to turn. 50 = full axis at 45 degrees.\n"
+        "# Change it live with + and - while head tracking is on -- saved here automatically.\n"
         "# head_yaw / head_pitch: multiply that direction (0 = off, negative = flip).\n"
         "# head_deadzone: head wobble smaller than this many degrees is ignored.\n"
         "head_speed=%ld\n"
@@ -1886,7 +1864,7 @@ static void save_config(UINT mods, UINT vk, DWORD button_mask, DWORD hold_ms, co
         "# Plain buttons only: a b x y lb rb back start l3 r3 dpad_up dpad_down\n"
         "# dpad_left dpad_right (not lt, rt, ps, touchpad or guide; no :hold).\n"
         "discord_button=",
-        g_head_mode ? "head" : g_freelook_enabled ? "on" : "off", (long)g_freelook_mouse_speed,
+        g_head_mode ? "head" : g_freelook_enabled ? "on" : "off",
         (long)g_head_speed, g_head_yaw, g_head_pitch, g_head_deadzone,
         g_head_camera, g_head_width, g_head_height, g_head_fps,
         g_update_check ? "on" : "off", g_control_pipe_enabled ? "on" : "off");
@@ -1902,6 +1880,10 @@ static void save_config(UINT mods, UINT vk, DWORD button_mask, DWORD hold_ms, co
         }
     }
     fprintf(out, "\n");
+    fprintf(out, "#\n# look_axis_style: straight, circle or speed. Ctrl+Alt+J changes it live: 1, 2 or 3 beeps.\n"
+                 "# look_center_skip: percent of the axis to step over around center, style straight only.\n"
+                 "# Ctrl+Alt+Up and Down change it live.\n"
+                 "look_axis_style=%s\nlook_center_skip=%ld\n", g_look_style_names[g_look_style], (long)g_look_skip);
 #ifndef SAFE_MODE_NO_EXTRAS
     /* 2.0 window. console=on starts as a console only, exactly like 1.x. */
     fprintf(out, "#\n# The window: the last mode, where it sits, and whether it starts in the tray.\n");
@@ -1993,6 +1975,12 @@ static void load_config(UINT *mods_out, UINT *vk_out, DWORD *button_mask_out, DW
 #ifndef SAFE_MODE_NO_EXTRAS
             InterlockedExchange(&g_head_mode, !strncmp(v, "head", 4));
 #endif
+        } else if (!strncmp(p, "look_center_skip=", 17)) {
+            long v = atol(p + 17);
+            if (v >= 0 && v <= 25) InterlockedExchange(&g_look_skip, v);
+        } else if (!strncmp(p, "look_axis_style=", 16)) {
+            for (int i = 0; i < LOOK_STYLE_COUNT; i++)
+                if (!strncmp(p + 16, g_look_style_names[i], strlen(g_look_style_names[i]))) InterlockedExchange(&g_look_style, i);
         } else if (!strncmp(p, "head_camera=", 12)) {
             strncpy(g_head_camera, p + 12, sizeof(g_head_camera) - 1);
             g_head_camera[sizeof(g_head_camera) - 1] = '\0';
@@ -2056,11 +2044,6 @@ static void load_config(UINT *mods_out, UINT *vk_out, DWORD *button_mask_out, DW
             for (char *c = v; *c; c++) *c = (char)tolower((unsigned char)*c);
             InterlockedExchange(&g_control_pipe_enabled,
                                 (!strncmp(v, "on", 2) || v[0] == '1' || !strncmp(v, "true", 4) || !strncmp(v, "yes", 3)) ? 1 : 0);
-        } else if (!strncmp(p, "freelook_speed=", 15)) {
-            long s = atol(p + 15);
-            if (s >= 200 && s <= 40000) InterlockedExchange(&g_freelook_mouse_speed, s);
-            else fprintf(stderr, "Warning: freelook_speed= in %s should be 200-40000, keeping %ld.\n",
-                          HOTKEY_CONFIG_FILE, (long)g_freelook_mouse_speed);
         }
     }
     fclose(f);
@@ -2086,6 +2069,9 @@ static void load_config(UINT *mods_out, UINT *vk_out, DWORD *button_mask_out, DW
     }
 }
 
+#ifndef SAFE_MODE_NO_EXTRAS
+static void look_bind_start(int axis);
+#endif
 static DWORD WINAPI toggle_thread(LPVOID arg) {
     (void)arg;
     /* g_hotkey_vk == 0 means the user explicitly disabled the keyboard
@@ -2108,10 +2094,39 @@ static DWORD WINAPI toggle_thread(LPVOID arg) {
         }
     }
 
+#ifndef SAFE_MODE_NO_EXTRAS
+    if (!RegisterHotKey(NULL, LOOK_STYLE_HOTKEY_ID, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'J'))
+        log_line("look axis style: Ctrl+Alt+J is taken, set look_axis_style= in the ini instead");
+    if (!RegisterHotKey(NULL, LOOK_BIND_X_HOTKEY_ID, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'K') ||
+        !RegisterHotKey(NULL, LOOK_BIND_Y_HOTKEY_ID, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'L'))
+        log_line("look axis mapping help: Ctrl+Alt+K or L is taken");
+    if (!RegisterHotKey(NULL, LOOK_SKIP_UP_HOTKEY_ID, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_UP) ||
+        !RegisterHotKey(NULL, LOOK_SKIP_DOWN_HOTKEY_ID, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_DOWN))
+        log_line("look center skip: Ctrl+Alt+Up or Down is taken, set look_center_skip= in the ini instead");
+#endif
+
     MSG msg;
     while (GetMessage(&msg, NULL, 0, 0)) {
         if (msg.message == WM_HOTKEY && msg.wParam == TOGGLE_HOTKEY_ID) {
             do_toggle();
+#ifndef SAFE_MODE_NO_EXTRAS
+        } else if (msg.message == WM_HOTKEY && msg.wParam == LOOK_STYLE_HOTKEY_ID) {
+            LONG next = (g_look_style + 1) % LOOK_STYLE_COUNT;
+            InterlockedExchange(&g_look_style, next);
+            log_line("look axis style: %s", g_look_style_names[next]);
+            for (LONG i = 0; i <= next; i++) { /* only this thread waits on the beeps */
+                Beep(880, 140);
+                Sleep(90);
+            }
+        } else if (msg.message == WM_HOTKEY && (msg.wParam == LOOK_BIND_X_HOTKEY_ID || msg.wParam == LOOK_BIND_Y_HOTKEY_ID)) {
+            look_bind_start(msg.wParam == LOOK_BIND_X_HOTKEY_ID ? 0 : 1);
+        } else if (msg.message == WM_HOTKEY && (msg.wParam == LOOK_SKIP_UP_HOTKEY_ID || msg.wParam == LOOK_SKIP_DOWN_HOTKEY_ID)) {
+            LONG v = g_look_skip + (msg.wParam == LOOK_SKIP_UP_HOTKEY_ID ? 1 : -1);
+            v = v < 0 ? 0 : v > 25 ? 25 : v;
+            InterlockedExchange(&g_look_skip, v);
+            log_line("look center skip: %ld%%", (long)v);
+            Beep(msg.wParam == LOOK_SKIP_UP_HOTKEY_ID ? 1000 : 600, 80);
+#endif
         } else if (msg.message == WM_APP_REMAP) {
             /* Live remap: main thread already updated g_hotkey_mods/vk --
                re-register with this thread's own registration, since
@@ -2670,12 +2685,8 @@ static void render_dashboard(const XINPUT_GAMEPAD *gp, double updates_per_sec, U
         else
             snprintf(head_banner, sizeof(head_banner), " HOTAS -- HEAD TRACKING: waiting for your game (H = setup)");
         printf("%-70s\n", head_banner);
-    } else if (FREELOOK_USE_MOUSE && g_freelook_enabled && mode == 1 && look == FREELOOK_OFF) {
-        /* HOTAS banner shows the live mouse free-look speed (+ / - to change) -- same 70-column width */
-        char speed_banner[80];
-        snprintf(speed_banner, sizeof(speed_banner), " HOTAS MODE -- hold RB = free look   look speed %ld (+/- to change)",
-                  (long)g_freelook_mouse_speed);
-        printf("%-70s\n", speed_banner);
+    } else if (g_freelook_enabled && mode == 1 && look == FREELOOK_OFF) {
+        printf("%-70s\n", " HOTAS MODE -- hold RB = free look");
     } else {
         printf("%s\n", mode_str);
     }
@@ -5565,31 +5576,15 @@ static volatile LONG g_vjoy_pump_live = 0;
    0.28-1.52ms) for ~9% of one core -- spinning the whole period would be
    steadier still but costs a full core. */
 #define VJOY_PUMP_SPIN_US 300
-/* Third round, same day: still "super stuttery" while looking, measured
-   intervals 0.13-1.73ms around the 1ms average. If WARDOGS adds up look
-   input per report, a frame that catches 6 reports turns the camera half
-   as far as one that catches 11 -- so while free look is active this
-   spins the whole period instead (measured 0.46-0.56ms intervals at 2000
-   Hz, at the cost of one core, only while RB is held), at twice the rate
-   ("crank the data rate", per the user -- and if it is per-report, twice
-   the turning speed too). Kept at 2000, not higher: very high report rates
-   (8000 Hz mice) are a known cause of stutter in some games themselves.
-   Each report while looking also flips Slider0's lowest bit (1/16384 of
-   the range, nothing a deadzone or a human would notice) so every report
-   carries a change -- in case WARDOGS reads change events (DirectInput
-   buffered data does), which identical repeats would never trigger. */
-#define VJOY_PUMP_LOOK_HZ 2000
 static DWORD WINAPI vjoy_pump_thread(LPVOID arg) {
     (void)arg;
     HANDLE timer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
-    log_line("vjoy pump: %d Hz (%d Hz while looking), %s timer", VJOY_PUMP_HZ, VJOY_PUMP_LOOK_HZ,
+    log_line("vjoy pump: %d Hz, %s timer", VJOY_PUMP_HZ,
               timer ? "high-resolution" : "NO high-resolution (Sleep(1) fallback)");
     LARGE_INTEGER freq, next, now;
     QueryPerformanceFrequency(&freq);
-    const LONGLONG period_normal = freq.QuadPart / VJOY_PUMP_HZ;
-    const LONGLONG period_look = freq.QuadPart / VJOY_PUMP_LOOK_HZ;
+    const LONGLONG period = freq.QuadPart / VJOY_PUMP_HZ;
     const LONGLONG spin = freq.QuadPart * VJOY_PUMP_SPIN_US / 1000000;
-    unsigned tick = 0;
     QueryPerformanceCounter(&next);
     for (;;) {
         if (!g_vjoy_pump_live) { /* nothing to send (Normal mode, no controller) -- idle cheaply */
@@ -5597,15 +5592,11 @@ static DWORD WINAPI vjoy_pump_thread(LPVOID arg) {
             QueryPerformanceCounter(&next);
             continue;
         }
-        LONG look = g_freelook_state;
-        int looking = look == FREELOOK_LOOKING || look == FREELOOK_LOOKING_LOCK_ARMED;
-        int spinFast = looking && !FREELOOK_USE_MOUSE; /* mouse look is time-based, doesn't need the steady 2000 Hz */
-        const LONGLONG period = spinFast ? period_look : period_normal;
         next.QuadPart += period;
         QueryPerformanceCounter(&now);
         if (now.QuadPart - next.QuadPart > period * 50) next = now; /* fell far behind (system stall): resync, don't burst */
         LONGLONG coarse = next.QuadPart - now.QuadPart - spin;
-        if (!spinFast && coarse > 0) {
+        if (coarse > 0) {
             LARGE_INTEGER due;
             due.QuadPart = -(coarse * 10000000LL / freq.QuadPart); /* relative, 100ns units */
             if (timer && due.QuadPart < 0 && SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE))
@@ -5620,72 +5611,11 @@ static DWORD WINAPI vjoy_pump_thread(LPVOID arg) {
         EnterCriticalSection(&g_output_lock);
         if (g_vjoy_pump_live && g_vjoy_acquired) {
             VjoyPosition pos = g_vjoy_pos;
-            if (looking && !FREELOOK_USE_BUTTONS && !FREELOOK_USE_MOUSE && (++tick & 1)) pos.wSlider += pos.wSlider < AXIS_MAX ? 1 : -1;
             vjoy_send_position(g_vjoy_rid, &pos);
         }
         LeaveCriticalSection(&g_output_lock);
-
-        /* Mouse-mode free look -- see FREELOOK_USE_MOUSE. Distance from
-           real elapsed time, fractional counts carried over, so the speed
-           is the same however unevenly these ticks land. */
-        if (FREELOOK_USE_MOUSE) {
-            static LARGE_INTEGER lastMouse;
-            static double carry = 0;
-            double dt = lastMouse.QuadPart ? (double)(now.QuadPart - lastMouse.QuadPart) / freq.QuadPart : 0;
-            lastMouse = now;
-            if (dt > 0.05) dt = 0.05; /* after an idle gap, don't jump */
-            LONG x = g_freelook_mouse_x;
-            int mag = x < 0 ? -x : x;
-            if (mag > FREELOOK_MOUSE_DEADZONE) {
-                double v = (double)(mag - FREELOOK_MOUSE_DEADZONE) / (32767 - FREELOOK_MOUSE_DEADZONE);
-                if (v > 1) v = 1;
-                carry += (x < 0 ? -v : v) * g_freelook_mouse_speed * dt;
-                LONG dx = (LONG)carry; /* truncates toward zero; the rest carries */
-                if (dx) {
-                    carry -= dx;
-                    if (g_head_mode) InterlockedExchangeAdd(&g_head_stick_sent, dx);
-                    INPUT in;
-                    memset(&in, 0, sizeof(in));
-                    in.type = INPUT_MOUSE;
-                    in.mi.dx = dx;
-                    in.mi.dwFlags = MOUSEEVENTF_MOVE;
-                    SendInput(1, &in, sizeof(in));
-                }
-            } else {
-                carry = 0;
-            }
-        }
     }
     return 0;
-}
-
-/* One axis of head tracking: head angle in, whole mouse counts out. Relative,
-   so there's no center to lose: only change since the last pose moves the
-   camera, and turning back undoes it. send=0 follows the head silently, so
-   coming back from a closed gate (alt-tab, R3 lock, mode switch) never jumps.
-   Pure (no globals touched), so --test-config can check it. */
-typedef struct { double ref, carry; int primed; } head_axis_t;
-#define HEAD_MAX_STEP_DEG 45.0 /* one pose can't really move this far: tracker lost and re-found the face */
-
-static int head_axis_step(head_axis_t *a, double angle, double counts_per_deg, double deadzone, int send) {
-    if (!a->primed) {
-        a->ref = angle;
-        a->carry = 0;
-        a->primed = 1;
-        return 0;
-    }
-    double d = angle - a->ref;
-    if (fabs(d) > HEAD_MAX_STEP_DEG) {
-        a->ref = angle;
-        return 0;
-    }
-    double moved = d > deadzone ? d - deadzone : d < -deadzone ? d + deadzone : 0;
-    a->ref += moved;
-    if (!send) return 0;
-    a->carry += moved * counts_per_deg;
-    int out = (int)a->carry; /* truncates toward zero; the rest carries */
-    a->carry -= out;
-    return out;
 }
 
 /* Pure helpers for the update check and the head tracking setup, so --test-config can check them. */
@@ -5731,82 +5661,62 @@ static LONG head_view(double deg, double fullDeg) {
     return v > 100 ? 100 : v < -100 ? -100 : (LONG)v;
 }
 
-/* What letting go of RB (or unlocking) does: tap the game's FreeLookReset, with
-   Left Alt let go for the tap (see wantAlt). Head mode also marks the next pose as
-   straight ahead, for the head box. */
+/* Degrees from straight ahead to an axis value, -32767..32767.
+   head_speed 50 = full axis at 45 degrees. Pure, so --test-config can check it. */
+static long head_angle_to_axis(double deg, double speed) {
+    double v = deg * speed / (50.0 * 45.0);
+    return v >= 1 ? 32767 : v <= -1 ? -32767 : (long)(v * 32767);
+}
+
+/* look_axis_style=circle: the head's turn walks round the two axes instead of back and forth on one. head_speed 50 =
+   a quarter of the way round at 45 degrees, stopping at directly behind. Eases out of the center, so sitting still
+   stays centered. Pure, so --test-config can check it. */
+static void head_angle_to_circle(double deg, double speed, long *x, long *y) {
+    double turn = deg * speed / 25.0;
+    turn = turn > 180 ? 180 : turn < -180 ? -180 : turn;
+    double r = fabs(turn) / 20.0;
+    if (r > 1) r = 1;
+    *x = (long)(r * 32767 * sin(turn * 3.14159265358979 / 180.0));
+    *y = (long)(-r * 32767 * cos(turn * 3.14159265358979 / 180.0)); /* forward is up, which is low on an axis */
+}
+
+/* look_center_skip=: 0 stays 0, anything else starts past the skipped zone and still ends at full. Pure, so
+   --test-config can check it. */
+static long look_skip_center(long v, long skipPercent) {
+    if (!v || skipPercent <= 0) return v;
+    long skip = 32767 * skipPercent / 100;
+    long out = skip + labs(v) * (32767 - skip) / 32767;
+    return v < 0 ? -out : out;
+}
+
+/* look_axis_style=speed: head_speed 50 = full axis at 90 degrees a second. */
+static long head_rate_to_axis(double degPerSec, double speed) {
+    return head_angle_to_axis(degPerSec / 2.0, speed);
+}
+
+/* The wobble filter: moves under deadzone degrees are ignored, and
+   leaving that range carries on from where it was, with no step. Pure, so --test-config can check it. */
+static double head_wobble(double held, double angle, double deadzone) {
+    double d = angle - held;
+    return d > deadzone ? angle - deadzone : d < -deadzone ? angle + deadzone : held;
+}
+
+/* What unlocking does: tap the game's FreeLookReset, and in head mode make the next pose straight ahead. */
 static void freelook_recenter(ULONGLONG *resetUntil, ULONGLONG now) {
     if (g_head_mode) InterlockedExchange(&g_head_recenter, 1);
     *resetUntil = now + FREELOOK_RESET_PULSE_MS;
 }
 
-/* Letting go of RB. In head mode, if the stick steered during the hold, take back
-   exactly that much: the camera returns to where the head has it and the center
-   stays put. A tap with no steering recenters. Normal free look always recenters. */
+/* Letting go of RB: tap the game's FreeLookReset. Only a tap with no steering makes the next
+   pose straight ahead, so a look round with the stick leaves the head's center where it was. */
 static void freelook_let_go(ULONGLONG *resetUntil, ULONGLONG now) {
-    LONG sent = InterlockedExchange(&g_head_stick_sent, 0);
-    if (!g_head_mode || sent == 0) {
-        freelook_recenter(resetUntil, now);
-        return;
-    }
-    if (!g_head_gate_open) return; /* focus moved away during the hold: that move would land on the desktop */
-    INPUT in;
-    memset(&in, 0, sizeof(in));
-    in.type = INPUT_MOUSE;
-    in.mi.dx = -sent;
-    in.mi.dwFlags = MOUSEEVENTF_MOVE;
-    SendInput(1, &in, sizeof(in));
+    LONG steered = InterlockedExchange(&g_look_steered, 0);
+    if (g_head_mode && !steered) InterlockedExchange(&g_head_recenter, 1);
+    *resetUntil = now + FREELOOK_RESET_PULSE_MS;
 }
 
 #ifndef SAFE_MODE_NO_EXTRAS /* SAFE builds have no head tracking */
 #define HEAD_GAP_MS 250 /* no pose for this long: start fresh on the next one instead of jumping */
-
-/* Is this process the program set with G or H? By name, from the system's process
-   list, so nothing ever opens a handle to the game. Looks again only when focus moves
-   to another process. No program set: no. */
-static int head_pid_is_game(DWORD pid) {
-    static DWORD lastPid = 0;
-    static char name[MAX_PATH] = "";
-    if (pid != lastPid) {
-        PROCESSENTRY32 pe;
-        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-        if (snap == INVALID_HANDLE_VALUE) return 0;
-        name[0] = '\0';
-        pe.dwSize = sizeof(pe);
-        for (BOOL more = Process32First(snap, &pe); more; more = Process32Next(snap, &pe)) {
-            if (pe.th32ProcessID == pid) {
-                lstrcpynA(name, pe.szExeFile, sizeof(name));
-                break;
-            }
-        }
-        CloseHandle(snap);
-        lastPid = pid;
-    }
-    const char *slash = strrchr(g_game_path, '\\');
-    return name[0] && !_stricmp(name, slash ? slash + 1 : g_game_path);
-}
-
-/* Does the game have the mouse? Focused, cursor over it, and cursor hidden. A game
-   stays focused while the mouse is used on another monitor, until something else is
-   clicked, and it shows the cursor there and in its menus but hides it while flying
-   (logged in game 2026-11-01). So this leaves the desktop cursor and inventory alone.
-   Checked 4x a second, not per pose. */
-static int head_game_focused(DWORD now) {
-    static DWORD checked = 0;
-    static int focused = 0;
-    if (now - checked >= 250) {
-        HWND fg = GetForegroundWindow();
-        DWORD pid = 0;
-        RECT win;
-        POINT cursor;
-        CURSORINFO ci;
-        ci.cbSize = sizeof(ci);
-        GetWindowThreadProcessId(fg, &pid);
-        focused = head_pid_is_game(pid) && GetCursorInfo(&ci) && !(ci.flags & CURSOR_SHOWING) &&
-                  GetWindowRect(fg, &win) && GetCursorPos(&cursor) && PtInRect(&win, cursor);
-        checked = now;
-    }
-    return focused;
-}
 
 /* Is a program with this exe name running? By name only, from the system's process
    list, so it never opens a handle to anything (the game included). */
@@ -5822,61 +5732,125 @@ static int head_process_running(const char *exe) {
     return found;
 }
 
+/* The pump re-sends g_vjoy_pos at 1000 Hz, so head-only motion reaches the game with the
+   sticks idle. While RB is held or locked the main loop has the axes, and they stay put. */
+static void look_axis_publish(long x, long y) {
+    if (g_freelook_state != FREELOOK_OFF || g_look_bind_axis >= 0) return;
+    InterlockedExchange(&g_look_head_x, x);
+    InterlockedExchange(&g_look_head_y, y);
+    EnterCriticalSection(&g_output_lock);
+    if (g_hidden_mode == 1) {
+        g_vjoy_pos.wSlider = i16_to_axis((SHORT)x);
+        g_vjoy_pos.wDial = i16_to_axis((SHORT)y);
+    }
+    LeaveCriticalSection(&g_output_lock);
+}
+
+/* Mapping help, see g_look_bind_axis: about 8 seconds, so there's time to press the key and then click the row.
+   The main loop puts the same value on every report it builds. */
+#define LOOK_BIND_MS 8000
+static DWORD WINAPI look_bind_thread(LPVOID arg) {
+    int axis = (int)(INT_PTR)arg;
+    DWORD start = GetTickCount();
+    log_line("look axis mapping help: pushing %s", axis ? "Slider1 (up/down)" : "Slider0 (left/right)");
+    for (;;) {
+        CURSORINFO ci;
+        ci.cbSize = sizeof(ci);
+        DWORD elapsed = GetTickCount() - start;
+        if (elapsed >= LOOK_BIND_MS || g_hidden_mode != 1 || !GetCursorInfo(&ci) || !(ci.flags & CURSOR_SHOWING)) break;
+        long v = (long)(32767 * sin(elapsed * 2 * 3.14159265358979 / 1500.0)); /* full both ways, every 1.5 s */
+        InterlockedExchange(&g_look_bind_value, v);
+        EnterCriticalSection(&g_output_lock);
+        if (axis) { g_vjoy_pos.wDial = i16_to_axis((SHORT)v); g_vjoy_pos.wSlider = i16_to_axis(0); }
+        else { g_vjoy_pos.wSlider = i16_to_axis((SHORT)v); g_vjoy_pos.wDial = i16_to_axis(0); }
+        LeaveCriticalSection(&g_output_lock);
+        Sleep(5);
+    }
+    InterlockedExchange(&g_look_bind_value, 0);
+    InterlockedExchange(&g_look_bind_axis, -1);
+    log_line("look axis mapping help: done");
+    return 0;
+}
+
+static void look_bind_start(int axis) {
+    CURSORINFO ci;
+    ci.cbSize = sizeof(ci);
+    if (g_hidden_mode != 1 || !GetCursorInfo(&ci) || !(ci.flags & CURSOR_SHOWING)) {
+        log_line("look axis mapping help: refused, needs HOTAS mode and a menu with the cursor showing");
+        Beep(300, 400);
+        return;
+    }
+    if (InterlockedCompareExchange(&g_look_bind_axis, axis, -1) != -1) return; /* already pushing */
+    HANDLE t = CreateThread(NULL, 0, look_bind_thread, (LPVOID)(INT_PTR)axis, 0, NULL);
+    if (t) CloseHandle(t);
+    else InterlockedExchange(&g_look_bind_axis, -1);
+    Beep(1200, 120);
+}
+
 /* One reading from the tracker, 250 times a second: where the head points, in degrees.
-   Becomes mouse movement while the game has the mouse. */
+   Becomes the look axes. */
 static void head_pose_in(double poseYaw, double posePitch) {
-    static head_axis_t yaw = {0}, pitch = {0};
-    static int heldX = 0, heldY = 0; /* head movement during an RB hold, applied on letting go so the center stays put */
     static DWORD last = 0;
     static double zeroYaw = 0, zeroPitch = 0;
     if (!isfinite(poseYaw) || !isfinite(posePitch)) return;
     DWORD now = GetTickCount();
     int fresh = now - last > HEAD_GAP_MS;
-    if (fresh) yaw.primed = pitch.primed = 0;
     last = now;
     InterlockedExchange(&g_head_last_tick, (LONG)now);
     InterlockedExchange(&g_head_seen, 1);
 
-    if (InterlockedExchange(&g_head_recenter, 0) || fresh) {
+    /* A tracker hiccup mustn't move center, or absolute look snaps there with the head still turned. */
+    static int zeroed = 0;
+    if (InterlockedExchange(&g_head_recenter, 0) || !zeroed) {
         zeroYaw = poseYaw;
         zeroPitch = posePitch;
+        zeroed = 1;
     }
     InterlockedExchange(&g_head_view_x, head_view((poseYaw - zeroYaw) * g_head_yaw, 45.0));
     InterlockedExchange(&g_head_view_y, head_view((posePitch - zeroPitch) * g_head_pitch, 30.0));
 
-    int gate = g_head_mode && g_hidden_mode == 1 && head_game_focused(now);
-    InterlockedExchange(&g_head_gate_open, gate);
-    int live = gate && g_freelook_state != FREELOOK_LOCKED;
-    double speed = (double)g_head_speed;
-    int dx = head_axis_step(&yaw, poseYaw, speed * g_head_yaw, g_head_deadzone, live);
-    int dy = head_axis_step(&pitch, posePitch, speed * g_head_pitch, g_head_deadzone, live);
-    /* Holding RB: the stick has the camera alone, the head waits. */
-    LONG lookState = g_freelook_state;
-    if (lookState == FREELOOK_LOOKING || lookState == FREELOOK_LOOKING_LOCK_ARMED) {
-        heldX += dx;
-        heldY += dy;
-        dx = dy = 0;
+    /* No focus check: axes land nowhere else, and the game's bind screen has to see them. */
+    int on = g_head_mode && g_hidden_mode == 1;
+    InterlockedExchange(&g_head_gate_open, on);
+    static double lastTurnYaw = 0, lastTurnPitch = 0, rateYaw = 0, ratePitch = 0;
+    static LARGE_INTEGER lastQpc;
+    LARGE_INTEGER qpc, freq;
+    QueryPerformanceCounter(&qpc);
+    QueryPerformanceFrequency(&freq);
+    double dt = (double)(qpc.QuadPart - lastQpc.QuadPart) / freq.QuadPart;
+    lastQpc = qpc;
+    static double heldYaw = 0, heldPitch = 0;
+    heldYaw = head_wobble(fresh ? 0 : heldYaw, (poseYaw - zeroYaw) * g_head_yaw, g_head_deadzone);
+    heldPitch = head_wobble(fresh ? 0 : heldPitch, (posePitch - zeroPitch) * g_head_pitch, g_head_deadzone);
+    double axisSpeed = (double)g_head_speed, turnYaw = heldYaw, turnPitch = heldPitch;
+    if (fresh || dt <= 0 || dt > 0.25) {
+        rateYaw = ratePitch = 0;
     } else {
-        if (gate) { /* not if focus moved away during the hold: it would land on the desktop */
-            dx += heldX;
-            dy += heldY;
-        }
-        heldX = heldY = 0;
+        rateYaw += ((turnYaw - lastTurnYaw) / dt - rateYaw) * 0.15;
+        ratePitch += ((turnPitch - lastTurnPitch) / dt - ratePitch) * 0.15;
     }
-    if (dx || dy) {
-        INPUT in;
-        memset(&in, 0, sizeof(in));
-        in.type = INPUT_MOUSE;
-        in.mi.dx = dx;
-        in.mi.dy = dy;
-        in.mi.dwFlags = MOUSEEVENTF_MOVE;
-        SendInput(1, &in, sizeof(in));
+    lastTurnYaw = turnYaw;
+    lastTurnPitch = turnPitch;
+    long axisX = 0, axisY = 0;
+    LONG style = g_look_style;
+    if (on && style == LOOK_STYLE_CIRCLE) {
+        head_angle_to_circle(turnYaw, axisSpeed, &axisX, &axisY);
+    } else if (on && style == LOOK_STYLE_SPEED) {
+        axisX = head_rate_to_axis(rateYaw, axisSpeed);
+        axisY = head_rate_to_axis(ratePitch, axisSpeed);
+    } else if (on) {
+        axisX = look_skip_center(head_angle_to_axis(turnYaw, axisSpeed), g_look_skip);
+        axisY = look_skip_center(head_angle_to_axis(turnPitch, axisSpeed), g_look_skip);
     }
+    look_axis_publish(axisX, axisY);
 }
 
-/* No readings for a moment: let go of Alt. */
+/* No readings for a while: let go of the look axes. */
 static void head_check_gap(void) {
-    if (GetTickCount() - (DWORD)g_head_last_tick >= HEAD_GAP_MS) InterlockedExchange(&g_head_gate_open, 0);
+    DWORD gap = GetTickCount() - (DWORD)g_head_last_tick;
+    if (gap < HEAD_GAP_MS) return;
+    InterlockedExchange(&g_head_gate_open, 0);
+    if (gap >= 2000) look_axis_publish(0, 0); /* really gone: a short hiccup holds the view where it is */
 }
 
 /* The one rule for the camera: on only while free look is set to head, the relay is in
@@ -5897,7 +5871,10 @@ static DWORD WINAPI head_thread(LPVOID arg) {
             lastFail = GetTickCount();
         }
         InterlockedExchange(&g_ui_head_failed, lastFail && GetTickCount() - lastFail <= 10000 && !ht_running());
-        if (want && !ht_running() && (!lastFail || GetTickCount() - lastFail > 10000)) ht_start(g_head_camera, g_head_width, g_head_height, g_head_fps, head_pose_in);
+        if (want && !ht_running() && (!lastFail || GetTickCount() - lastFail > 10000)) {
+            InterlockedExchange(&g_head_recenter, 1); /* the tracker measures from where the head is now, so center starts over */
+            ht_start(g_head_camera, g_head_width, g_head_height, g_head_fps, head_pose_in);
+        }
         else if (!want && ht_running()) ht_stop();
         head_check_gap();
         Sleep(250);
@@ -5937,9 +5914,9 @@ static void run_head_setup_flow(void) {
     set_color(CLR_NORMAL);
     printf("Your webcam tracks your head, and the camera in the game follows it.\n\n");
     set_color(CLR_YELLOW_BR);
-    printf("NOTICE: this sends your head movement to the game as mouse movement from\n");
-    printf("software. Anti-cheat that studies mouse input could treat that as suspicious.\n");
-    printf("No bans are known, but nobody can promise that. Use it at your own risk.\n\n");
+    printf("NOTICE: this moves the game's look axes from your webcam, with no mouse movement.\n");
+    printf("The game hasn't said head tracking is allowed, and one player using a head tracker\n");
+    printf("has reported a ban. Nobody can promise it's safe. Use it at your own risk.\n\n");
     set_color(CLR_NORMAL);
 
     if (!ht_files_present()) {
@@ -6209,7 +6186,6 @@ static void relay_cleanup(void) {
     ui_tray_remove();
     ht_stop();
 #endif
-    freelook_release_alt(); /* never leave Left Alt held down system-wide -- see FREELOOK_USE_MOUSE */
     relinquish_vjoy_if_acquired();
     run_hidhide("--cloak-off");
     restore_gamebar_guide_capture(); /* undo whatever this session changed, same as the cloak-off right above */
@@ -6251,7 +6227,6 @@ static void fatal_exit(const char *message) {
 #ifndef SAFE_MODE_NO_EXTRAS
     ht_stop();
 #endif
-    freelook_release_alt();
     relinquish_vjoy_if_acquired();
     run_hidhide("--cloak-off");
     restore_gamebar_guide_capture();
@@ -7694,7 +7669,7 @@ static int service_ipc_requests(int connected) {
     if (fl >= 0) {
         InterlockedExchange(&g_head_mode, fl == 2);
         InterlockedExchange(&g_freelook_enabled, fl != 0); /* session only -- the ini's freelook= stays the startup default;
-                                                              the main loop releases a lock/Alt on its next spin */
+                                                              the main loop releases a lock on its next spin */
     }
     LONG pad = InterlockedExchange(&g_ipc_pad_want, -1);
     if (pad >= 0 && connected && g_vigem_target && pad != g_vigem_emulate_ds4) { /* never "swap" to the type it
@@ -8256,25 +8231,35 @@ int main(int argc, char **argv) {
             CHECK(parse_ipc_command(longcmd) == IPC_CMD_BAD, "overlong input rejected");
         }
 
-        printf("== head_axis_step (head tracking) ==\n");
+        printf("== look axes (head tracking) ==\n");
         {
-            head_axis_t a = {0};
-            CHECK(head_axis_step(&a, 5.0, 50, 0.15, 1) == 0, "first pose only sets the starting point, no jump");
-            CHECK(head_axis_step(&a, 5.1, 50, 0.15, 1) == 0, "wobble inside the dead zone is ignored");
-            CHECK(head_axis_step(&a, 15.0, 50, 0.15, 1) == 492, "10 degrees at 50/deg, minus the dead zone");
-            CHECK(head_axis_step(&a, 5.0, 50, 0.15, 1) == -484, "turning back reverses (-485 plus the 0.5 count carried over)");
-            CHECK(head_axis_step(&a, 25.0, 50, 0.15, 0) == 0, "gate closed: no output");
-            CHECK(head_axis_step(&a, 25.0, 50, 0.15, 1) == 0, "gate reopens with the head elsewhere: no jump");
-            CHECK(head_axis_step(&a, 90.0, 50, 0.15, 1) == 0, "tracker jump past the limit is dropped");
-            CHECK(a.ref == 90.0, "and the new position becomes the starting point");
-            CHECK(head_axis_step(&a, 100.0, -50, 0.15, 1) < 0, "negative speed flips direction");
-            head_axis_t b = {0};
-            int total = 0;
-            head_axis_step(&b, 0.0, 10, 0, 1);
-            for (int i = 1; i <= 100; i++) total += head_axis_step(&b, i * 0.01, 10, 0, 1);
-            CHECK(total == 9 || total == 10, "tiny moves add up instead of being lost");
             CHECK(head_view(0, 45) == 0 && head_view(22.5, 45) == 50 && head_view(-22.5, 45) == -50, "head box: position scales");
             CHECK(head_view(90, 45) == 100 && head_view(-90, 45) == -100, "head box: stays inside the box");
+            CHECK(head_angle_to_axis(0, 50) == 0, "look axis: straight ahead is center");
+            CHECK(head_angle_to_axis(45, 50) == 32767 && head_angle_to_axis(-45, 50) == -32767, "look axis: 45 degrees at speed 50 is full, both ways");
+            CHECK(head_angle_to_axis(120, 50) == 32767, "look axis: past full stays at full");
+            CHECK(head_angle_to_axis(22.5, 100) == 32767, "look axis: higher speed reaches full sooner");
+            long cx, cy;
+            head_angle_to_circle(0, 50, &cx, &cy);
+            CHECK(cx == 0 && cy == 0, "look circle: sitting still stays centered");
+            head_angle_to_circle(45, 50, &cx, &cy);
+            CHECK(cx == 32767 && cy > -100 && cy < 100, "look circle: a quarter of the way round is full right");
+            head_angle_to_circle(-45, 50, &cx, &cy);
+            CHECK(cx == -32767, "look circle: the other way is full left");
+            head_angle_to_circle(5, 50, &cx, &cy);
+            CHECK(cx > 0 && -cy > 5 * cx, "look circle: a small turn is mostly forward, then goes round");
+            head_angle_to_circle(90, 50, &cx, &cy);
+            CHECK(cx > -100 && cx < 100 && cy == 32767, "look circle: all the way round is behind");
+            long bx, by;
+            head_angle_to_circle(120, 50, &bx, &by);
+            CHECK(bx == cx && by == cy, "look circle: stops behind, doesn't wrap round and jump");
+            CHECK(head_rate_to_axis(90, 50) == 32767 && head_rate_to_axis(-90, 50) == -32767, "look speed: 90 a second at speed 50 is full, both ways");
+            CHECK(head_wobble(0, 0.1, 0.15) == 0 && head_wobble(0, -0.1, 0.15) == 0, "look axis: wobble is ignored");
+            CHECK(head_wobble(0, 0.25, 0.15) > 0.09 && head_wobble(0, 0.25, 0.15) < 0.11, "look axis: leaving the wobble range has no step");
+            CHECK(look_skip_center(0, 10) == 0, "center skip: exactly center stays center");
+            CHECK(look_skip_center(1, 10) >= 3276 && look_skip_center(-1, 10) <= -3276, "center skip: the smallest move starts past the zone, both ways");
+            CHECK(look_skip_center(32767, 10) == 32767 && look_skip_center(-32767, 10) == -32767, "center skip: full stays full");
+            CHECK(look_skip_center(5000, 0) == 5000, "center skip: off changes nothing");
         }
 
         printf("== update check ==\n");
@@ -8495,6 +8480,7 @@ int main(int argc, char **argv) {
         }
     }
 #ifndef SAFE_MODE_NO_EXTRAS
+    log_line("free look and head tracking: vJoy look axes, no mouse, style %s", g_look_style_names[g_look_style]);
     if (g_head_mode) head_start_thread(); /* freelook=head in the ini */
     update_cleanup();
     if (g_update_check) update_start_thread();
@@ -8755,6 +8741,7 @@ int main(int argc, char **argv) {
         int lockBtnWas = 0;             /* R3's previous state, for press edges */
         int lockBtnSwallowed = 0;       /* R3 press used for the lock -- kept from the game until released */
         int lookBtnDir = 0;             /* FREELOOK_USE_BUTTONS: -1 look-left held, +1 look-right held, 0 neither */
+        SHORT lookStickX = 0;           /* where the stick last had Slider0, kept through a lock */
         ULONGLONG lookResetUntil = 0;   /* reset tap in progress until this tick, 0 = none */
         InterlockedExchange(&g_freelook_state, FREELOOK_OFF);
         /* The whole vJoy report, also re-sent by vjoy_pump_thread() -- see
@@ -8901,7 +8888,7 @@ int main(int argc, char **argv) {
                     /* Pressed: a fresh look. Also how a tap unlocks -- the
                        lock is dropped here, so letting go resets as usual. */
                     lookLocked = lookLockArmed = 0;
-                    InterlockedExchange(&g_head_stick_sent, 0);
+                    InterlockedExchange(&g_look_steered, 0);
                 } else if (!lookNow && lookHeld && modeNow == 1) {
                     /* Let go in HOTAS mode (not "left HOTAS mode while holding"). */
                     if (lookLockArmed) lookLocked = 1;
@@ -8931,24 +8918,8 @@ int main(int argc, char **argv) {
                                                                                  : FREELOOK_LOOKING)
                                                     : lookLocked ? FREELOOK_LOCKED
                                                                  : FREELOOK_OFF);
-                /* Mouse mode: Alt held while looking or locked, released
-                   the moment neither applies (incl. leaving HOTAS mode);
-                   the stick only moves the mouse while RB is actually held. */
-                if (FREELOOK_USE_MOUSE) {
-                    /* Head mode works like holding RB all the time: Left Alt stays held while
-                       the game has the mouse, and letting go of RB drops Alt for the reset tap,
-                       the same order that recenters normal free look. Holding RB there hands the
-                       camera to the stick, head paused, unless the game doesn't have the mouse
-                       (the stick would drag the desktop cursor). */
-                    int wantAlt = modeNow == 1 && (g_head_mode ? g_head_gate_open && lookResetUntil == 0 : lookHeld || lookLocked);
-                    if (wantAlt && !g_freelook_alt_held) {
-                        InterlockedExchange(&g_freelook_alt_held, 1);
-                        freelook_send_alt(1);
-                    } else if (!wantAlt && g_freelook_alt_held) {
-                        freelook_release_alt();
-                    }
-                    InterlockedExchange(&g_freelook_mouse_x, lookHeld && (!g_head_mode || g_head_gate_open) ? gp.sThumbRX : 0);
-                }
+                if (lookHeld && (gp.sThumbRX > FREELOOK_STICK_DEADZONE || gp.sThumbRX < -FREELOOK_STICK_DEADZONE))
+                    InterlockedExchange(&g_look_steered, 1);
             }
 
             if (memcmp(&gp, &lastGamepad, sizeof(gp)) != 0 || g_ps_pressed != lastPsSent ||
@@ -9030,9 +9001,19 @@ int main(int argc, char **argv) {
                            need up and down, and I need that to work still
                            when I'm in free look"). Slider1 (look up/down)
                            stays centered. */
-                        g_vjoy_pos.wAxisXRot = i16_to_axis(lookHeld && (!g_head_mode || g_head_gate_open) ? 0 : gp.sThumbRX);
+                        g_vjoy_pos.wAxisXRot = i16_to_axis(lookHeld ? 0 : gp.sThumbRX);
                         g_vjoy_pos.wAxisYRot = i16_to_axis(nry);
-                        if (lookHeld && !FREELOOK_USE_BUTTONS && !FREELOOK_USE_MOUSE) g_vjoy_pos.wSlider = i16_to_axis(gp.sThumbRX);
+                        /* This report starts neutral: put the look back on it. While RB is held the stick has
+                           left/right and the head waits. In the speed style the axis is a turn rate, so a lock or
+                           a waiting head has to be zero or the view would keep turning. */
+                        LONG bindAxis = g_look_bind_axis;
+                        int lookIsRate = g_look_style == LOOK_STYLE_SPEED;
+                        if (lookHeld) lookStickX = gp.sThumbRX > FREELOOK_STICK_DEADZONE || gp.sThumbRX < -FREELOOK_STICK_DEADZONE ? gp.sThumbRX : 0;
+                        if (lookHeld) g_vjoy_pos.wSlider = i16_to_axis(lookStickX);
+                        else if (lookLocked) g_vjoy_pos.wSlider = i16_to_axis(lookIsRate ? 0 : lookStickX);
+                        else g_vjoy_pos.wSlider = i16_to_axis((SHORT)(bindAxis == 0 ? g_look_bind_value : bindAxis > 0 ? 0 : g_look_head_x));
+                        if ((lookHeld || lookLocked) && lookIsRate) g_vjoy_pos.wDial = i16_to_axis(0);
+                        else g_vjoy_pos.wDial = i16_to_axis((SHORT)(bindAxis == 1 ? g_look_bind_value : bindAxis >= 0 ? 0 : g_look_head_y));
                     }
 
                     /* Whenever the PS button, touchpad, or Guide button is
@@ -9078,7 +9059,7 @@ int main(int argc, char **argv) {
                     /* discord_button=: button 18 only, Normal mode only (vjoyPass is always 0 in HOTAS mode) */
                     if (vjoyPass) g_vjoy_pos.lButtons |= 1L << (VJOY_DISCORD_BTN - 1);
                     /* Look left/right as held buttons -- see FREELOOK_USE_BUTTONS. */
-                    if (FREELOOK_USE_BUTTONS && !FREELOOK_USE_MOUSE && lookHeld && !vjoy_muted) {
+                    if (FREELOOK_USE_BUTTONS && lookHeld && !vjoy_muted) {
                         int x = gp.sThumbRX;
                         if (lookBtnDir < 0 && x > -FREELOOK_BTN_OFF) lookBtnDir = 0;
                         if (lookBtnDir > 0 && x < FREELOOK_BTN_OFF) lookBtnDir = 0;
@@ -9221,18 +9202,16 @@ int main(int argc, char **argv) {
                     InterlockedExchange(&g_relay_state, RELAY_STATE_CONNECTED);
                     QueryPerformanceCounter(&lastPrint);
 #endif
-                } else if (FREELOOK_USE_MOUSE && g_freelook_enabled && (key == '+' || key == '=' || key == '-' || key == '_')) {
-                    /* Mouse free-look speed (or head speed in head mode), live, 20% steps -- see FREELOOK_USE_MOUSE.
-                       Saved straight to the ini (freelook_speed= / head_speed=) so it sticks. */
-                    int head = g_head_mode != 0;
-                    LONG s = head ? g_head_speed : g_freelook_mouse_speed;
+                } else if (g_head_mode && (key == '+' || key == '=' || key == '-' || key == '_')) {
+                    /* Head speed, live, 20% steps. Saved straight to the ini (head_speed=) so it sticks. */
+                    LONG s = g_head_speed;
                     LONG step = s / 5 ? s / 5 : 1;
                     s = (key == '+' || key == '=') ? s + step : s - step;
-                    if (s < (head ? 1 : 200)) s = head ? 1 : 200;
-                    if (s > (head ? 2000 : 40000)) s = head ? 2000 : 40000;
-                    InterlockedExchange(head ? &g_head_speed : &g_freelook_mouse_speed, s);
+                    if (s < 1) s = 1;
+                    if (s > 2000) s = 2000;
+                    InterlockedExchange(&g_head_speed, s);
                     save_config(g_hotkey_mods, g_hotkey_vk, g_toggle_button_mask, g_toggle_hold_ms, g_game_path);
-                    log_line("%s now %ld", head ? "head tracking: speed" : "freelook: mouse speed", (long)s);
+                    log_line("head tracking: speed now %ld", (long)s);
                 } else if (key == 'V') {
                     /* Live switch between the emulated virtual controller
                        looking like an Xbox 360 pad or a DualShock 4 -- the
@@ -9336,7 +9315,6 @@ int main(int argc, char **argv) {
             log_line("vigem: controller dropped -- virtual pad's slot unknown, torn down instead of kept");
         }
         InterlockedExchange(&g_vjoy_pump_live, 0); /* stop re-sending the last live report first */
-        freelook_release_alt(); /* controller dropped mid-look/lock: let go of Alt */
         InterlockedExchange(&g_freelook_state, FREELOOK_OFF);
         vjoy_send_neutral(rid);
         relinquish_vjoy_if_acquired();

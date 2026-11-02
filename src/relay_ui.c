@@ -134,11 +134,11 @@ typedef struct {
     int relay;              /* RELAY_STATE_* */
     int ever, dropped_s, pad_kept, connecting, vjoy_busy, stalled;
     int mode;               /* -1 unset, 0 Normal, 1 HOTAS */
-    int fl_on, head_mode, fl_state, head_st, no_face, cam_on, alt_held;
+    int fl_on, head_mode, fl_state, head_st, no_face, cam_on;
     int head_files, has_camera, has_game, game_up, cam_failed;
     int backend, is_bt, vigem_on, vigem_ds4, vigem_ok, hidden;
     int batt_src, batt_pct, batt_chg, batt_coarse;
-    long fl_speed, head_speed;
+    long head_speed;
     int hotkey_failed;
 } ui_state_t;
 
@@ -151,7 +151,7 @@ typedef struct {
     int m_class, m_btn; /* m_btn: 0 none, 1 to Normal, 2 to HOTAS, 3 both */
     UINT32 bar;         /* 0 = no controller */
     wchar_t l_word[16], l_sub[64];
-    int l_class, l_color, chip_cam, chip_alt;
+    int l_class, l_color, chip_cam;
     wchar_t k_word[24], k_sub[96];
     int k_class, take;
     wchar_t batt[16];
@@ -235,7 +235,7 @@ static void ui_status(const ui_state_t *s, ui_words_t *w) {
             wcscpy(w->l_sub, L"Let go, camera stays");
         } else {
             swprintf(w->l_word, 16, L"Hold %ls", r1);
-            swprintf(w->l_sub, 64, L"Free look, speed %ld", s->fl_speed);
+            wcscpy(w->l_sub, L"Free look");
         }
     } else if (s->fl_state != FREELOOK_OFF) {
         wcscpy(w->l_word, L"Stick");
@@ -246,7 +246,7 @@ static void ui_status(const ui_state_t *s, ui_words_t *w) {
         w->l_color = UI_W_OK;
     } else if (s->head_st == HEAD_ST_PAUSED) {
         wcscpy(w->l_word, L"Paused");
-        wcscpy(w->l_sub, L"Game doesn't have the mouse");
+        wcscpy(w->l_sub, L"No head readings right now");
     } else if (s->no_face) {
         wcscpy(w->l_word, L"No face");
         wcscpy(w->l_sub, L"Camera on, can't see you");
@@ -262,7 +262,6 @@ static void ui_status(const ui_state_t *s, ui_words_t *w) {
         else { wcscpy(w->l_sub, L"Camera starting"); w->l_color = UI_W_NORMAL; }
     }
     w->chip_cam = s->cam_on;
-    w->chip_alt = s->alt_held;
 
     /* Link, and the takeover when Look and Link stop mattering */
     int wired_xbox = s->backend == BACKEND_XINPUT && s->batt_src == BATTERY_SRC_WIRED;
@@ -422,7 +421,6 @@ static void ui_read_state(ui_state_t *s) {
     if (s->cam_on && g_ht_raw_valid) valid_seen = now;
     s->no_face = s->cam_on && now - valid_seen >= 1000;
     (void)was_valid_tick;
-    s->alt_held = g_freelook_alt_held;
     if (head_files < 0) head_files = ht_files_present();
     s->head_files = head_files;
     s->has_camera = g_head_camera[0] != 0;
@@ -439,7 +437,6 @@ static void ui_read_state(ui_state_t *s) {
     s->batt_pct = g_battery_percent;
     s->batt_chg = g_battery_charging;
     s->batt_coarse = g_battery_coarse;
-    s->fl_speed = g_freelook_mouse_speed;
     s->head_speed = g_head_speed;
     s->hotkey_failed = g_ui_hotkey_failed;
 }
@@ -954,7 +951,6 @@ static void ui_draw_scene_static(void) {
         ui_draw_box(508, 240, g_w.k_class, H_BOX_LINK, L"Link", g_w.k_word, g_w.k_sub, UI_W_NORMAL);
         float cx = 252 + 248 - 8;
         if (g_w.chip_cam) { cx -= 68; ui_draw_chip(cx, 12, 68, L"\xE722", L"Camera"); }
-        if (g_w.chip_alt) { cx -= 36; ui_draw_chip(cx, 12, 32, NULL, L"Alt"); }
         ui_draw_battery(508 + 240 - 8, 12);
     }
     ui_draw_box(12, 232, g_w.m_class, H_BOX_MODE, g_w.m_label, g_w.m_word, g_w.m_sub, UI_W_NORMAL);
@@ -1772,7 +1768,8 @@ enum {
     P_SPEED, P_SPEED_DOWN, P_SPEED_UP, P_YAW, P_PITCH, P_DEAD, P_FLIP_Y, P_FLIP_P, P_SHOW_CAM, P_RECENTER, P_CAM = 100, /* + camera index */
     P_CAMMODE = 120, /* + mode index */
     P_MAP = 130, P_MAP_RESET, P_GAME_CHANGE, P_GAME_LAUNCH, P_PIPE, P_DISCORD, P_DISCORD_NONE, P_UPDCHECK, P_UPDATE_NOW, P_UPDATE_RESTART,
-    P_TRAY, P_CONSOLE, P_CONSOLE_MODE, P_REPORT, P_REPORT_OPEN, P_REPORT_COPY, P_OPENLOG, P_OPENINI, P_RELEASES
+    P_TRAY, P_CONSOLE, P_CONSOLE_MODE, P_REPORT, P_REPORT_OPEN, P_REPORT_COPY, P_OPENLOG, P_OPENINI, P_RELEASES,
+    P_SKIP, P_BIND_X, P_BIND_Y
 };
 enum { CAP_NONE = 0, CAP_HOTKEY, CAP_BUTTON, CAP_DISCORD, CAP_MAP1, CAP_MAP2 };
 
@@ -1943,7 +1940,7 @@ static void ui_page_rack(void) {
     swprintf(v[0], 64, L"%hs, %hs", hk, btn);
     swprintf(v[1], 64, L"%ls, auto", g_vigem_emulate_ds4 ? L"PlayStation" : L"Xbox");
     if (g_head_mode) swprintf(v[2], 64, L"Head, speed %ld", (long)g_head_speed);
-    else if (g_freelook_enabled) swprintf(v[2], 64, L"Stick, speed %ld", (long)g_freelook_mouse_speed);
+    else if (g_freelook_enabled) wcscpy(v[2], L"Stick");
     else wcscpy(v[2], L"Off");
     if (g_head_camera[0]) swprintf(v[3], 64, L"%hs", g_head_camera);
     else wcscpy(v[3], L"No camera set");
@@ -2008,25 +2005,19 @@ static void ui_page_pad(void) {
     p_note(L"Matches your controller each time it connects. Changing it pulls the pad from a running game for a moment.");
 }
 
-static void ui_speed_row(void) {
-    int head = g_head_mode != 0;
-    long s = head ? g_head_speed : g_freelook_mouse_speed;
-    long lo = head ? 1 : 200, hi = head ? 2000 : 40000;
-    wchar_t v[24];
-    swprintf(v, 24, L"%ld", s);
-    p_slider(head ? L"Head speed" : L"Look speed", (float)(log((double)s / lo) / log((double)hi / lo)), v, P_SPEED);
-}
-
 static void ui_page_look(void) {
     static const wchar_t *const m[] = {L"Off", L"Stick", L"Head"};
     p_segment(m, 3, g_head_mode ? 2 : g_freelook_enabled ? 1 : 0, P_SEG);
-    if (g_freelook_enabled) ui_speed_row();
     if (g_head_mode) {
         p_note(L"Turn your head and the camera follows. Tap RB to recenter. Hold RB to look with the stick. R3 while holding it locks the camera.");
     } else if (g_freelook_enabled) {
-        p_note(L"Hold RB and the right stick looks around. Let go and it snaps back. R3 while holding it locks the camera. Tap RB or R3 to unlock.");
+        p_note(L"Hold RB and the right stick looks around. Let go and it comes back. R3 while holding it locks the camera. Tap RB or R3 to unlock.");
     }
-    p_note(L"The relay holds Left Alt while looking, which is how the game's free look works. It's always released when you let go.");
+    p_note(L"The relay sends no mouse movement or keys. Looking goes through the game's look axes, which you map once on its HOTAS screen.");
+    p_label(L"Map the look axes");
+    p_button(L"Push left/right", P_BIND_X, 0);
+    p_button(L"Push up/down", P_BIND_Y, 0);
+    p_note(L"In the game's HOTAS screen, press one, then click its look row within 8 seconds. Ctrl+Alt+K and Ctrl+Alt+L do the same from inside the game. Menus only, never while flying.");
 }
 
 static void ui_page_head(void) {
@@ -2035,16 +2026,30 @@ static void ui_page_head(void) {
         p_note(L"The head_tracker folder isn't next to the relay. It's in the full download.");
         return;
     }
-    p_note(L"Your webcam tracks your head, and the camera in the game follows it. This sends your head movement to the game as mouse movement from software. Anti-cheat that studies mouse input could treat that as suspicious. No bans are known, but nobody can promise that. Use it at your own risk.");
-    if (g_head_mode) ui_speed_row();
+    p_note(L"Your webcam tracks your head, and the camera in the game follows it through the look axes, with no mouse movement. The game hasn't said head tracking is allowed, and one player using a head tracker has reported a ban. Nobody can promise it's safe. Use it at your own risk.");
+    swprintf(v, 64, L"%ld", (long)g_head_speed);
+    p_slider(L"Head speed", (float)(log((double)g_head_speed) / log(2000.0)), v, P_SPEED);
     swprintf(v, 64, L"%.2f", g_head_yaw < 0 ? -g_head_yaw : g_head_yaw);
-    p_slider(L"Turn", (float)((g_head_yaw < 0 ? -g_head_yaw : g_head_yaw) / 3), v, P_YAW);
-    p_toggle(L"Flip turn", g_head_yaw < 0, P_FLIP_Y);
+    p_slider(L"Left/right speed", (float)((g_head_yaw < 0 ? -g_head_yaw : g_head_yaw) / 3), v, P_YAW);
+    p_toggle(L"Flip left/right", g_head_yaw < 0, P_FLIP_Y);
     swprintf(v, 64, L"%.2f", g_head_pitch < 0 ? -g_head_pitch : g_head_pitch);
-    p_slider(L"Nod", (float)((g_head_pitch < 0 ? -g_head_pitch : g_head_pitch) / 3), v, P_PITCH);
-    p_toggle(L"Flip nod", g_head_pitch < 0, P_FLIP_P);
+    p_slider(L"Up/down speed", (float)((g_head_pitch < 0 ? -g_head_pitch : g_head_pitch) / 3), v, P_PITCH);
+    p_toggle(L"Flip up/down", g_head_pitch < 0, P_FLIP_P);
     swprintf(v, 64, L"%.1f\x00B0", g_head_deadzone);
     p_slider(L"Still zone", (float)(g_head_deadzone / 10), v, P_DEAD);
+    p_label(L"How your head moves the view");
+    static const wchar_t *const styles[] = {L"Position", L"Circle", L"Speed"};
+    p_segment(styles, 3, (int)g_look_style, P_SEG);
+    if (g_look_style == LOOK_STYLE_STRAIGHT) {
+        p_note(L"Use with Absolute Freelook on in the game. Where your head points is where the view points, so it can't drift. The game may snap to center near the middle.");
+        swprintf(v, 64, L"%ld%%", (long)g_look_skip);
+        p_slider(L"Center skip", (float)g_look_skip / 25.0f, v, P_SKIP);
+        p_note(L"Steps over the middle of the axis if the game keeps snapping there. Leave it at 0 unless you need it.");
+    } else if (g_look_style == LOOK_STYLE_SPEED) {
+        p_note(L"Use with Absolute Freelook off in the game. How fast your head turns is how fast the view turns. It can drift.");
+    } else {
+        p_note(L"Your head turn goes around both axes. An experiment: Position or Speed will usually feel better.");
+    }
     p_toggle(L"Show my camera", g_ui_show_camera, P_SHOW_CAM);
     p_note(g_ui_show_camera ? L"Your picture shows in the head ring, in this window only. It isn't stored or sent anywhere."
                             : L"Off: the head ring shows just the dot.");
@@ -2361,10 +2366,7 @@ static void ui_save_soon(void) { g_save_at = GetTickCount() + 500; }
 static void ui_slider_set(int id, float t) {
     t = t < 0 ? 0 : t > 1 ? 1 : t;
     if (id == P_SPEED) {
-        int head = g_head_mode != 0;
-        double lo = head ? 1 : 200, hi = head ? 2000 : 40000;
-        LONG s = (LONG)(lo * pow(hi / lo, t) + .5);
-        InterlockedExchange(head ? &g_head_speed : &g_freelook_mouse_speed, s);
+        InterlockedExchange(&g_head_speed, (LONG)(pow(2000.0, t) + .5));
     } else if (id == P_YAW) {
         double v = round(t * 60) / 20;
         g_head_yaw = g_head_yaw < 0 ? -v : v;
@@ -2373,6 +2375,8 @@ static void ui_slider_set(int id, float t) {
         g_head_pitch = g_head_pitch < 0 ? -v : v;
     } else if (id == P_DEAD) {
         g_head_deadzone = round(t * 100) / 10;
+    } else if (id == P_SKIP) {
+        InterlockedExchange(&g_look_skip, (LONG)(t * 25 + .5));
     }
     ui_save_soon();
     g_pop_dirty = 1;
@@ -2512,6 +2516,13 @@ static void ui_pop_action(int id) {
         g_pop_dirty = 1;
         return;
     }
+    if (g_page == PG_HEAD && id >= P_SEG && id < P_SEG + 3) {
+        static const LONG styles[3] = {LOOK_STYLE_STRAIGHT, LOOK_STYLE_CIRCLE, LOOK_STYLE_SPEED};
+        InterlockedExchange(&g_look_style, styles[id - P_SEG]);
+        ui_save_soon();
+        g_pop_dirty = 1;
+        return;
+    }
     if (id >= P_CAM && id < P_CAM + 16) {
         strncpy(g_head_camera, g_cams[id - P_CAM], sizeof(g_head_camera) - 1);
         ui_save_soon();
@@ -2568,6 +2579,8 @@ static void ui_pop_action(int id) {
             g_pop_dirty = 1;
             break;
         case P_RECENTER: InterlockedExchange(&g_head_recenter, 1); break;
+        case P_BIND_X: look_bind_start(0); break;
+        case P_BIND_Y: look_bind_start(1); break;
         case P_MAP:
             g_cap_wait_release = 1;
             g_cap = CAP_MAP1;
@@ -2723,7 +2736,7 @@ static LRESULT CALLBACK ui_pop_proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
             if (g_cap == CAP_HOTKEY && vk != VK_CONTROL && vk != VK_SHIFT && vk != VK_MENU && vk != VK_LWIN && vk != VK_RWIN) {
                 UINT mods = 0;
                 if (GetKeyState(VK_CONTROL) & 0x8000) mods |= MOD_CONTROL;
-                if ((GetKeyState(VK_MENU) & 0x8000) && !g_freelook_alt_held) mods |= MOD_ALT; /* the relay's own held Alt isn't yours */
+                if (GetKeyState(VK_MENU) & 0x8000) mods |= MOD_ALT;
                 if (GetKeyState(VK_SHIFT) & 0x8000) mods |= MOD_SHIFT;
                 int plain = (vk >= '0' && vk <= '9') || (vk >= 'A' && vk <= 'Z') || (vk >= VK_F1 && vk <= VK_F12);
                 if (plain && (mods || (vk >= VK_F1 && vk <= VK_F12))) {
@@ -2975,10 +2988,6 @@ static LRESULT CALLBACK ui_main_proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
             mm->ptMinTrackSize.y = MulDiv(286, (int)dpi, 96);
             return 0;
         }
-        case WM_SYSCOMMAND:
-            /* The relay holds Left Alt while looking: letting go shouldn't drop this window into menu mode. */
-            if ((wp & 0xFFF0) == SC_KEYMENU) return 0;
-            break;
         case WM_ACTIVATE:
             if (LOWORD(wp) == WA_INACTIVE) g_ui_deactivated = GetTickCount();
             break;
